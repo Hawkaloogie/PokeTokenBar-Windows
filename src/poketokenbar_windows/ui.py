@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QSettings, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QMovie, QPainter, QPen, QPixmap
+from PySide6.QtGui import QAction, QColor, QIcon, QImage, QMovie, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -183,6 +183,19 @@ def _sprite_pixmap(path: Path | None, box: int = 96) -> QPixmap:
     if pix.isNull():
         return QPixmap()
     return pix.scaled(box, box, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
+
+
+def _muted_pixmap(pix: QPixmap) -> QPixmap:
+    if pix.isNull():
+        return pix
+    image = pix.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+    for y in range(image.height()):
+        for x in range(image.width()):
+            color = image.pixelColor(x, y)
+            grey = int(0.3 * color.red() + 0.59 * color.green() + 0.11 * color.blue())
+            color.setRgb(grey, grey, grey, int(color.alpha() * 0.4))
+            image.setPixelColor(x, y, color)
+    return QPixmap.fromImage(image)
 
 
 def _icon_from_sprite(path: Path | None, *, fallback_egg: bool = False) -> QIcon:
@@ -522,10 +535,7 @@ class MainWindow(QMainWindow):
             return
 
         current = self._current_catch()
-        owned: dict[int, bool] = {}
-        for catch in catches:
-            for species_id in catch.path_ids or [catch.species_id]:
-                owned[species_id] = owned.get(species_id, False) or catch.is_shiny
+        owned = self._owned_species()
         for column, species_id in enumerate(sorted(owned)):
             self.dex_grid.addWidget(
                 self._dex_cell(species_id, shiny=owned[species_id]),
@@ -544,6 +554,16 @@ class MainWindow(QMainWindow):
             if catch.base_id == mon.base_id and catch.nature == mon.nature and catch.is_shiny == mon.is_shiny:
                 return catch
         return None
+
+    def _owned_species(self) -> dict[int, bool]:
+        owned: dict[int, bool] = {}
+        current = self._current_catch()
+        for catch in self.state.catches:
+            path = catch.path_ids or [catch.species_id]
+            limit = (self.state.mon.stage_index + 1) if (catch is current and self.state.mon) else len(path)
+            for species_id in path[:limit]:
+                owned[species_id] = owned.get(species_id, False) or catch.is_shiny
+        return owned
 
     def _dex_cell(self, species_id: int, *, shiny: bool) -> QFrame:
         cell = QFrame()
@@ -575,17 +595,23 @@ class MainWindow(QMainWindow):
         card.setFrameShape(QFrame.Shape.StyledPanel)
         card.setStyleSheet("QFrame { background: #fbfaf8; border: 1px solid #e7e2da; border-radius: 14px; }")
         layout = QVBoxLayout(card)
+        path_ids = catch.path_ids or [catch.species_id]
+        owned_index = self.state.mon.stage_index if (is_current and self.state.mon is not None) else len(path_ids) - 1
+        owned_index = max(0, min(owned_index, len(path_ids) - 1))
+        display_id = path_ids[owned_index]
+        owned_name = self.api.localized_name(display_id, self.state.language)
+
         header = QHBoxLayout()
-        display_id = catch.species_id
-        if is_current and self.state.mon is not None:
-            display_id = self.state.mon.current_id
-        title = QLabel(self.api.localized_name(display_id, self.state.language))
+        title = QLabel(owned_name)
         tf = title.font()
         tf.setPointSize(tf.pointSize() + 3)
         tf.setBold(True)
         title.setFont(tf)
         header.addWidget(title)
         header.addStretch(1)
+        owned_badge = QLabel("Owned")
+        owned_badge.setStyleSheet("QLabel { background: #dcfce7; color: #166534; border-radius: 8px; padding: 2px 8px; }")
+        header.addWidget(owned_badge)
         if is_current:
             badge = QLabel("Current")
             badge.setStyleSheet("QLabel { background: #dbeafe; color: #1d4ed8; border-radius: 8px; padding: 2px 8px; }")
@@ -594,14 +620,23 @@ class MainWindow(QMainWindow):
             header.addWidget(QLabel("✨"))
         layout.addLayout(header)
 
+        summary = QLabel(
+            f"You have {owned_name} only · stage {owned_index + 1} of {len(path_ids)}"
+            if owned_index + 1 < len(path_ids)
+            else f"Fully evolved {owned_name}"
+        )
+        summary.setStyleSheet("color: #4b5563;")
+        layout.addWidget(summary)
+
         line = QHBoxLayout()
         line.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        path_ids = catch.path_ids or [catch.species_id]
         for index, species_id in enumerate(path_ids):
             if index:
                 arrow = QLabel("→")
                 arrow.setStyleSheet("color: #9ca3af; font-size: 16px;")
                 line.addWidget(arrow)
+            have = index <= owned_index
+            current_stage = index == owned_index
             stage = QWidget()
             stage_layout = QVBoxLayout(stage)
             stage_layout.setContentsMargins(0, 0, 0, 0)
@@ -609,16 +644,31 @@ class MainWindow(QMainWindow):
             sprite = QLabel()
             sprite.setAlignment(Qt.AlignmentFlag.AlignCenter)
             sprite.setFixedSize(72, 72)
-            active = species_id == display_id
-            path = self.api.sprite_path(species_id, shiny=catch.is_shiny, animated=False)
+            path = self.api.sprite_path(species_id, shiny=catch.is_shiny, animated=False) if have else self.api.sprite_path(species_id, animated=False)
             pix = _sprite_pixmap(path, 64)
-            sprite.setPixmap(pix if not pix.isNull() else _pokeball_pixmap(64))
-            if active:
-                sprite.setStyleSheet("QLabel { background: #fff7ed; border-radius: 10px; }")
-            stage_name = QLabel(self.api.localized_name(species_id, self.state.language))
+            if pix.isNull():
+                pix = _pokeball_pixmap(64)
+            if not have:
+                pix = _muted_pixmap(pix)
+            sprite.setPixmap(pix)
+            if current_stage:
+                sprite.setStyleSheet("QLabel { background: #dcfce7; border: 2px solid #16a34a; border-radius: 10px; }")
+            elif not have:
+                sprite.setStyleSheet("QLabel { background: #f3f4f6; border-radius: 10px; }")
+            if have:
+                stage_name = QLabel(self.api.localized_name(species_id, self.state.language))
+                status = QLabel("You have this" if current_stage else "Previous form")
+                status.setStyleSheet("color: #166534;" if current_stage else "color: #6b7280;")
+            else:
+                stage_name = QLabel("???")
+                status = QLabel("Not owned")
+                status.setStyleSheet("color: #9ca3af;")
+                stage_name.setStyleSheet("color: #9ca3af;")
             stage_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            status.setAlignment(Qt.AlignmentFlag.AlignCenter)
             stage_layout.addWidget(sprite)
             stage_layout.addWidget(stage_name)
+            stage_layout.addWidget(status)
             line.addWidget(stage)
         line.addStretch(1)
         layout.addLayout(line)
@@ -755,9 +805,8 @@ class TrayController(QObject):
         self.refresh_running = False
         self.last_result = result
         self.window.render(result)
+        self.tray.setIcon(_pokeball_icon())
         text = f"{compact_tokens(result.snapshot.today_tokens)} today"
-        icon = _icon_from_sprite(result.sprite_path, fallback_egg=result.state.mon is None)
-        self.tray.setIcon(icon)
         if result.state.mon:
             text += f" · {result.display_name}"
         else:
@@ -765,15 +814,16 @@ class TrayController(QObject):
         self.tray.setToolTip(f"PokeTokenBar Windows · {text}")
         for event in result.events:
             if event.startswith("hatched:"):
-                self.tray.showMessage("Pokemon hatched!", result.display_name, icon, 5000)
+                sprite_icon = _icon_from_sprite(result.sprite_path)
+                self.tray.showMessage("Pokemon hatched!", result.display_name, sprite_icon, 5000)
             elif event.startswith("evolved:"):
-                self.tray.showMessage("Evolution!", result.display_name, icon, 5000)
+                self.tray.showMessage("Evolution!", result.display_name, QSystemTrayIcon.MessageIcon.Information, 5000)
             elif event.startswith("graduated:"):
-                self.tray.showMessage("Pokemon graduated!", "A new egg is ready.", icon, 5000)
+                self.tray.showMessage("Pokemon graduated!", "A new egg is ready.", QSystemTrayIcon.MessageIcon.Information, 5000)
             elif event.startswith("candy:"):
                 parts = event.split(":", 3)
                 count = parts[1] if len(parts) > 1 else "1"
-                self.tray.showMessage("Rare Candy earned!", f"You earned {count} Rare Candy.", icon, 5000)
+                self.tray.showMessage("Rare Candy earned!", f"You earned {count} Rare Candy.", QSystemTrayIcon.MessageIcon.Information, 5000)
 
     def _on_failed(self, message: str) -> None:
         self.refresh_running = False
