@@ -170,6 +170,39 @@ def _pokeball_icon(size: int = 64) -> QIcon:
     return icon
 
 
+def _sprite_pixmap(path: Path | None, box: int = 96) -> QPixmap:
+    pix = QPixmap()
+    if path is not None and path.exists():
+        if path.suffix.lower() == ".gif":
+            movie = QMovie(str(path))
+            if movie.isValid():
+                movie.jumpToFrame(0)
+                pix = movie.currentPixmap()
+        else:
+            pix = QPixmap(str(path))
+    if pix.isNull():
+        return QPixmap()
+    return pix.scaled(box, box, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
+
+
+def _icon_from_sprite(path: Path | None, *, fallback_egg: bool = False) -> QIcon:
+    pix = _sprite_pixmap(path, 128)
+    if pix.isNull():
+        pix = _egg_pixmap(128) if fallback_egg else _pokeball_pixmap(128)
+    return QIcon(pix)
+
+
+def _clear_layout(layout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        child = item.layout()
+        if widget is not None:
+            widget.deleteLater()
+        elif child is not None:
+            _clear_layout(child)
+
+
 def _data_cache_dir() -> Path:
     path = cache_dir()
     path.mkdir(parents=True, exist_ok=True)
@@ -202,15 +235,16 @@ class MetricCard(QFrame):
 class MainWindow(QMainWindow):
     refresh_requested = Signal()
 
-    def __init__(self, state: GameState, settings: QSettings):
+    def __init__(self, state: GameState, settings: QSettings, api: PokeAPIClient):
         super().__init__()
         self.state = state
         self.settings = settings
+        self.api = api
         self.movie: QMovie | None = None
         self.setWindowTitle("PokeTokenBar Windows")
         self.setWindowIcon(application_icon())
-        self.setMinimumSize(480, 620)
-        self.resize(520, 700)
+        self.setMinimumSize(520, 640)
+        self.resize(560, 740)
 
         tabs = QTabWidget()
         tabs.addTab(self._build_home(), "Home")
@@ -287,9 +321,45 @@ class MainWindow(QMainWindow):
     def _build_collection(self) -> QWidget:
         root = QWidget()
         layout = QVBoxLayout(root)
-        self.collection_list = QListWidget()
-        layout.addWidget(self.collection_list)
+        layout.setContentsMargins(8, 8, 8, 8)
+        inner = QTabWidget()
+        inner.addTab(self._wrap_scroll(self._build_dex_page()), "Pokédex")
+        inner.addTab(self._wrap_scroll(self._build_catch_page()), "Catch log")
+        layout.addWidget(inner)
         return root
+
+    def _wrap_scroll(self, widget: QWidget) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(widget)
+        return scroll
+
+    def _build_dex_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        self.dex_empty = QLabel("No Pokemon hatched yet")
+        self.dex_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.dex_empty)
+        self.dex_grid = QGridLayout()
+        self.dex_grid.setSpacing(10)
+        layout.addLayout(self.dex_grid)
+        layout.addStretch(1)
+        return page
+
+    def _build_catch_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        self.catch_empty = QLabel("No Pokemon hatched yet")
+        self.catch_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.catch_empty)
+        self.catch_list = QVBoxLayout()
+        self.catch_list.setSpacing(10)
+        layout.addLayout(self.catch_list)
+        layout.addStretch(1)
+        return page
 
     def _build_bag_shop(self) -> QWidget:
         root = QWidget()
@@ -443,16 +513,122 @@ class MainWindow(QMainWindow):
         self.sprite.setPixmap(_egg_pixmap(112) if egg else _pokeball_pixmap(112))
 
     def _render_collection(self) -> None:
-        self.collection_list.clear()
-        if not self.state.catches:
-            self.collection_list.addItem("No Pokemon hatched yet")
+        _clear_layout(self.dex_grid)
+        _clear_layout(self.catch_list)
+        catches = list(self.state.catches)
+        self.dex_empty.setVisible(not catches)
+        self.catch_empty.setVisible(not catches)
+        if not catches:
             return
-        for catch in reversed(self.state.catches):
-            shiny = "✨ " if catch.is_shiny else ""
-            current = catch.species_id
-            self.collection_list.addItem(
-                f"{shiny}#{current} · {catch.rarity.title()} · {catch.nature} · {catch.caught_at[:10]}"
+
+        current = self._current_catch()
+        owned: dict[int, bool] = {}
+        for catch in catches:
+            for species_id in catch.path_ids or [catch.species_id]:
+                owned[species_id] = owned.get(species_id, False) or catch.is_shiny
+        for column, species_id in enumerate(sorted(owned)):
+            self.dex_grid.addWidget(
+                self._dex_cell(species_id, shiny=owned[species_id]),
+                column // 4,
+                column % 4,
             )
+
+        for catch in reversed(catches):
+            self.catch_list.addWidget(self._catch_card(catch, current is catch))
+
+    def _current_catch(self):
+        mon = self.state.mon
+        if mon is None:
+            return None
+        for catch in reversed(self.state.catches):
+            if catch.base_id == mon.base_id and catch.nature == mon.nature and catch.is_shiny == mon.is_shiny:
+                return catch
+        return None
+
+    def _dex_cell(self, species_id: int, *, shiny: bool) -> QFrame:
+        cell = QFrame()
+        cell.setFrameShape(QFrame.Shape.StyledPanel)
+        cell.setStyleSheet("QFrame { background: #f7f5f2; border: 1px solid #e7e2da; border-radius: 12px; }")
+        layout = QVBoxLayout(cell)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sprite = QLabel()
+        sprite.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sprite.setFixedSize(80, 80)
+        path = self.api.sprite_path(species_id, shiny=shiny, animated=False)
+        pix = _sprite_pixmap(path, 72)
+        sprite.setPixmap(pix if not pix.isNull() else _pokeball_pixmap(72))
+        name = QLabel(self.api.localized_name(species_id, self.state.language))
+        name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        font = name.font()
+        font.setBold(True)
+        name.setFont(font)
+        number = QLabel(f"{'✨ ' if shiny else ''}#{species_id:03d}")
+        number.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        number.setStyleSheet("color: #6b7280;")
+        layout.addWidget(sprite)
+        layout.addWidget(number)
+        layout.addWidget(name)
+        return cell
+
+    def _catch_card(self, catch, is_current: bool) -> QFrame:
+        card = QFrame()
+        card.setFrameShape(QFrame.Shape.StyledPanel)
+        card.setStyleSheet("QFrame { background: #fbfaf8; border: 1px solid #e7e2da; border-radius: 14px; }")
+        layout = QVBoxLayout(card)
+        header = QHBoxLayout()
+        display_id = catch.species_id
+        if is_current and self.state.mon is not None:
+            display_id = self.state.mon.current_id
+        title = QLabel(self.api.localized_name(display_id, self.state.language))
+        tf = title.font()
+        tf.setPointSize(tf.pointSize() + 3)
+        tf.setBold(True)
+        title.setFont(tf)
+        header.addWidget(title)
+        header.addStretch(1)
+        if is_current:
+            badge = QLabel("Current")
+            badge.setStyleSheet("QLabel { background: #dbeafe; color: #1d4ed8; border-radius: 8px; padding: 2px 8px; }")
+            header.addWidget(badge)
+        if catch.is_shiny:
+            header.addWidget(QLabel("✨"))
+        layout.addLayout(header)
+
+        line = QHBoxLayout()
+        line.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        path_ids = catch.path_ids or [catch.species_id]
+        for index, species_id in enumerate(path_ids):
+            if index:
+                arrow = QLabel("→")
+                arrow.setStyleSheet("color: #9ca3af; font-size: 16px;")
+                line.addWidget(arrow)
+            stage = QWidget()
+            stage_layout = QVBoxLayout(stage)
+            stage_layout.setContentsMargins(0, 0, 0, 0)
+            stage_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            sprite = QLabel()
+            sprite.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            sprite.setFixedSize(72, 72)
+            active = species_id == display_id
+            path = self.api.sprite_path(species_id, shiny=catch.is_shiny, animated=False)
+            pix = _sprite_pixmap(path, 64)
+            sprite.setPixmap(pix if not pix.isNull() else _pokeball_pixmap(64))
+            if active:
+                sprite.setStyleSheet("QLabel { background: #fff7ed; border-radius: 10px; }")
+            stage_name = QLabel(self.api.localized_name(species_id, self.state.language))
+            stage_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            stage_layout.addWidget(sprite)
+            stage_layout.addWidget(stage_name)
+            line.addWidget(stage)
+        line.addStretch(1)
+        layout.addLayout(line)
+
+        meta = QLabel(
+            f"#{display_id:03d} · {catch.rarity.title()} · {catch.nature} · {catch.caught_at[:10]}"
+        )
+        meta.setStyleSheet("color: #6b7280;")
+        layout.addWidget(meta)
+        return card
 
     def _render_bag_shop(self) -> None:
         self.wallet_shop_label.setText(f"Wallet: {compact_tokens(self.state.wallet)} tokens")
@@ -482,7 +658,7 @@ class TrayController(QObject):
         self.refresh_running = False
         self.last_result: RefreshResult | None = None
 
-        self.window = MainWindow(self.state, self.settings)
+        self.window = MainWindow(self.state, self.settings, self.api)
         self.window.refresh_requested.connect(self._refresh_and_reschedule)
         self._wire_shop_buttons()
 
@@ -557,6 +733,7 @@ class TrayController(QObject):
                 events.extend(apply_limit_rewards(candidate, limits))
                 mon = candidate.mon
                 sprite = self.api.sprite_path(mon.current_id, shiny=mon.is_shiny) if mon else self.api.egg_sprite_path()
+                self._prefetch_collection(candidate)
                 display_name = self.api.localized_name(mon.current_id, candidate.language) if mon else "Pokemon Egg"
                 self.store.save(candidate)
                 self.state = candidate
@@ -565,32 +742,38 @@ class TrayController(QObject):
         except Exception as exc:
             self.bridge.failed.emit(f"{type(exc).__name__}: {exc}")
 
+    def _prefetch_collection(self, state: GameState) -> None:
+        for catch in state.catches:
+            for species_id in catch.path_ids or [catch.species_id]:
+                try:
+                    self.api.localized_name(species_id, state.language)
+                    self.api.sprite_path(species_id, shiny=catch.is_shiny, animated=False)
+                except Exception:
+                    continue
+
     def _on_refreshed(self, result: RefreshResult) -> None:
         self.refresh_running = False
         self.last_result = result
         self.window.render(result)
         text = f"{compact_tokens(result.snapshot.today_tokens)} today"
+        icon = _icon_from_sprite(result.sprite_path, fallback_egg=result.state.mon is None)
+        self.tray.setIcon(icon)
         if result.state.mon:
             text += f" · {result.display_name}"
-            if result.sprite_path and result.sprite_path.suffix.lower() == ".png":
-                self.tray.setIcon(QIcon(str(result.sprite_path)))
-            else:
-                self.tray.setIcon(_pokeball_icon())
         else:
             text += " · egg"
-            self.tray.setIcon(_pokeball_icon())
         self.tray.setToolTip(f"PokeTokenBar Windows · {text}")
         for event in result.events:
             if event.startswith("hatched:"):
-                self.tray.showMessage("Pokemon hatched!", result.display_name, QSystemTrayIcon.MessageIcon.Information, 5000)
+                self.tray.showMessage("Pokemon hatched!", result.display_name, icon, 5000)
             elif event.startswith("evolved:"):
-                self.tray.showMessage("Evolution!", result.display_name, QSystemTrayIcon.MessageIcon.Information, 5000)
+                self.tray.showMessage("Evolution!", result.display_name, icon, 5000)
             elif event.startswith("graduated:"):
-                self.tray.showMessage("Pokemon graduated!", "A new egg is ready.", QSystemTrayIcon.MessageIcon.Information, 5000)
+                self.tray.showMessage("Pokemon graduated!", "A new egg is ready.", icon, 5000)
             elif event.startswith("candy:"):
                 parts = event.split(":", 3)
                 count = parts[1] if len(parts) > 1 else "1"
-                self.tray.showMessage("Rare Candy earned!", f"You earned {count} Rare Candy.", QSystemTrayIcon.MessageIcon.Information, 5000)
+                self.tray.showMessage("Rare Candy earned!", f"You earned {count} Rare Candy.", icon, 5000)
 
     def _on_failed(self, message: str) -> None:
         self.refresh_running = False
