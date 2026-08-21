@@ -115,7 +115,7 @@ CI runs those checks on `windows-latest` for Python 3.10 and 3.12 and builds a P
 
 ## Publish to GitHub
 
-The repository is prepared for `pnavarro-hermasa/PokeTokenBar-Windows`. With GitHub CLI authenticated:
+The repository is prepared for `pnmartinez/PokeTokenBar-Windows`. With GitHub CLI authenticated:
 
 ```powershell
 .\scripts\publish-github.ps1

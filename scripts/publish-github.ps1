@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$owner = if ($env:GITHUB_OWNER) { $env:GITHUB_OWNER } else { "pnavarro-hermasa" }
+$owner = if ($env:GITHUB_OWNER) { $env:GITHUB_OWNER } else { "pnmartinez" }
 $repo = if ($env:GITHUB_REPO) { $env:GITHUB_REPO } else { "PokeTokenBar-Windows" }
 $visibility = if ($env:GITHUB_VISIBILITY) { $env:GITHUB_VISIBILITY } else { "public" }
 $full = "$owner/$repo"
