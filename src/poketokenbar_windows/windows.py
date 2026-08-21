@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+APP_NAME = "PokeTokenBar Windows"
+REGISTRY_VALUE_NAME = "PokeTokenBar Windows"
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def user_profile() -> Path:
+    return Path(os.environ.get("USERPROFILE") or Path.home()).expanduser()
+
+
+def roaming_appdata() -> Path:
+    return Path(os.environ.get("APPDATA") or (user_profile() / "AppData/Roaming")).expanduser()
+
+
+def local_appdata() -> Path:
+    return Path(os.environ.get("LOCALAPPDATA") or (user_profile() / "AppData/Local")).expanduser()
+
+
+def state_dir() -> Path:
+    override = os.environ.get("PTB_STATE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return roaming_appdata() / "PokeTokenBar-Windows"
+
+
+def cache_dir() -> Path:
+    override = os.environ.get("PTB_CACHE_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return local_appdata() / "PokeTokenBar-Windows/Cache"
+
+
+def claude_desktop_roots() -> list[Path]:
+    """Best-effort native Windows Claude Desktop embedded-session roots."""
+    return [
+        roaming_appdata() / "Claude/local-agent-mode-sessions",
+        roaming_appdata() / "Claude/claude-code-sessions",
+        local_appdata() / "Claude/local-agent-mode-sessions",
+        local_appdata() / "Claude/claude-code-sessions",
+    ]
+
+
+def cursor_database_candidates() -> list[Path]:
+    return [
+        roaming_appdata() / "Cursor/User/globalStorage/state.vscdb",
+        roaming_appdata() / "Cursor - Nightly/User/globalStorage/state.vscdb",
+        roaming_appdata() / "Cursor Nightly/User/globalStorage/state.vscdb",
+    ]
+
+
+def kiro_database_candidates() -> list[Path]:
+    # Kiro CLI's Windows installer/runtime lives under Local AppData.  The
+    # conversation database has moved between per-user application-data layouts
+    # across Kiro generations, so probe both native AppData roots plus the
+    # portable ~/.kiro fallback and honor KIRO_CLI_HOME before these candidates.
+    return [
+        local_appdata() / "kiro-cli/data.sqlite3",
+        local_appdata() / "Kiro-Cli/data.sqlite3",
+        roaming_appdata() / "kiro-cli/data.sqlite3",
+        user_profile() / ".kiro/data.sqlite3",
+    ]
+
+
+def hidden_subprocess_kwargs() -> dict:
+    """Prevent Windows from flashing a console when spawning CLI helpers."""
+    if os.name != "nt":
+        return {}
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return {"creationflags": flags, "startupinfo": startupinfo}
+
+
+def resolve_gui_binary(path: str) -> str:
+    candidate = Path(path)
+    if candidate.suffix.lower() in {".cmd", ".bat"}:
+        exe = candidate.with_suffix(".exe")
+        if exe.exists():
+            return str(exe)
+    return path
+
+
+def gui_python() -> Path:
+    python = Path(sys.executable)
+    if python.name.lower() == "python.exe":
+        pythonw = python.with_name("pythonw.exe")
+        if pythonw.exists():
+            return pythonw
+    return python
+
+
+def startup_command() -> str:
+    """Command stored in HKCU Run. Prefer a frozen GUI exe, then console-free Python."""
+    if getattr(sys, "frozen", False):
+        return f'"{Path(sys.executable)}"'
+    return f'"{gui_python()}" -m poketokenbar_windows'
+
+
+def autostart_enabled() -> bool:
+    if os.name != "nt":
+        return False
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ) as key:
+            value, kind = winreg.QueryValueEx(key, REGISTRY_VALUE_NAME)
+        return kind == winreg.REG_SZ and bool(str(value).strip())
+    except OSError:
+        return False
+
+
+def set_autostart(enabled: bool) -> None:
+    if os.name != "nt":
+        raise RuntimeError("Windows login startup is only available on Windows")
+    import winreg
+
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+        if enabled:
+            winreg.SetValueEx(key, REGISTRY_VALUE_NAME, 0, winreg.REG_SZ, startup_command())
+        else:
+            try:
+                winreg.DeleteValue(key, REGISTRY_VALUE_NAME)
+            except FileNotFoundError:
+                pass
+
+
+def apply_native_window_icon(hwnd: int, ico_path: Path) -> None:
+    """Force the Win32 window/taskbar icon; Qt alone often keeps pythonw.exe."""
+    if os.name != "nt" or not hwnd or not ico_path.exists():
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.LoadImageW.argtypes = [
+        wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT,
+    ]
+    user32.LoadImageW.restype = wintypes.HANDLE
+    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.SendMessageW.restype = wintypes.LPARAM
+
+    image_icon = 1
+    load_from_file = 0x00000010
+    path = str(ico_path)
+    small = user32.LoadImageW(None, path, image_icon, 16, 16, load_from_file)
+    big = user32.LoadImageW(None, path, image_icon, 256, 256, load_from_file) or user32.LoadImageW(
+        None, path, image_icon, 32, 32, load_from_file
+    )
+    if small:
+        user32.SendMessageW(hwnd, 0x0080, 0, small)
+    if big:
+        user32.SendMessageW(hwnd, 0x0080, 1, big)
+
+
+def open_folder(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        os.startfile(path)  # type: ignore[attr-defined]
+        return
+    subprocess.Popen(["xdg-open", str(path)])
