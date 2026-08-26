@@ -4,6 +4,8 @@ import ctypes
 import os
 import sys
 
+from .windows import APP_NAME
+
 
 def _configure_windows_identity() -> None:
     if os.name != "nt":
@@ -34,8 +36,8 @@ def main() -> int:
     app = QApplication(sys.argv)
     icon = application_icon()
     app.setWindowIcon(icon)
-    app.setApplicationName("PokeTokenBar Windows")
-    app.setApplicationDisplayName("PokeTokenBar Windows")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
     app.setOrganizationName("PokeTokenBar")
     app.setQuitOnLastWindowClosed(False)
 
