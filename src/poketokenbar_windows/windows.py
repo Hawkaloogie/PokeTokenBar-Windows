@@ -5,7 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-APP_NAME = "PokeTokenBar Windows"
+# User-facing branding is intentionally shorter than the stable Windows IDs below.
+APP_NAME = "PokeTokenBar"
 REGISTRY_VALUE_NAME = "PokeTokenBar Windows"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -30,13 +31,29 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .formatting import compact_tokens, money
+from .formatting import (
+    compact_tokens,
+    limit_reset_expiry,
+    limit_reset_tray_warning,
+    money,
+    provider_limit_rows,
+)
 from .limits import fetch_all_limits
 from .models import ProviderLimits, UsageSnapshot
 from .pokemon import EGG_HATCH_THRESHOLD, PokeAPIClient, egg_price, phase_threshold
-from .state import GameState, StateStore, apply_limit_rewards, apply_usage, buy_egg, buy_item, usage_delta, use_item
+from .state import (
+    GameState,
+    StateStore,
+    apply_limit_rewards,
+    apply_usage,
+    buy_egg,
+    buy_item,
+    companion_progress_percent,
+    usage_delta,
+    use_item,
+)
 from .usage import PROVIDER_LABELS, scan_all
-from .windows import apply_native_window_icon, autostart_enabled, cache_dir, set_autostart
+from .windows import APP_NAME, apply_native_window_icon, autostart_enabled, cache_dir, set_autostart
 
 
 @dataclass(slots=True)
@@ -48,6 +65,25 @@ class RefreshResult:
     events: list[str]
     sprite_path: Path | None
     display_name: str
+
+
+def tray_tooltip(result: RefreshResult) -> str:
+    text = f"{compact_tokens(result.snapshot.today_tokens)} today"
+    if result.state.mon:
+        text += f" · {result.display_name}"
+    else:
+        text += " · egg"
+    text += f" · {companion_progress_percent(result.state)}%"
+
+    warnings: list[tuple[float, str]] = []
+    for limits in result.limits.values():
+        warning = limit_reset_tray_warning(limits)
+        expiry = limit_reset_expiry(limits)
+        if warning and expiry is not None:
+            warnings.append((expiry.timestamp(), warning))
+    if warnings:
+        text += f" · {min(warnings, key=lambda item: item[0])[1]}"
+    return f"{APP_NAME} · {text}"
 
 
 class Bridge(QObject):
@@ -254,7 +290,7 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.api = api
         self.movie: QMovie | None = None
-        self.setWindowTitle("PokeTokenBar Windows")
+        self.setWindowTitle(APP_NAME)
         self.setWindowIcon(application_icon())
         self.setMinimumSize(520, 640)
         self.resize(560, 740)
@@ -474,11 +510,15 @@ class MainWindow(QMainWindow):
         any_limits = False
         for key, limits in result.limits.items():
             label = PROVIDER_LABELS.get(key, key.title())
-            for window in limits.windows:
+            for row in provider_limit_rows(label, limits):
                 any_limits = True
-                reset = window.resets_at.strftime("%a %H:%M") if window.resets_at else "reset unknown"
-                plan = f" · {limits.plan}" if limits.plan else ""
-                self.limits_list.addItem(f"{label}{plan} · {window.label}: {window.used_percent:.0f}% · {reset}")
+                item = QListWidgetItem(row.text)
+                if row.urgency != "neutral":
+                    item.setForeground(QColor("#b91c1c" if row.urgency == "critical" else "#b45309"))
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                self.limits_list.addItem(item)
         if not any_limits:
             self.limits_list.addItem("No official limit data available")
 
@@ -713,7 +753,7 @@ class TrayController(QObject):
         self._wire_shop_buttons()
 
         self.tray = QSystemTrayIcon(_pokeball_icon(), self)
-        self.tray.setToolTip("PokeTokenBar Windows")
+        self.tray.setToolTip(APP_NAME)
         menu = QMenu()
         open_action = QAction("Open PokeTokenBar", self)
         open_action.triggered.connect(self.show_window)
@@ -806,12 +846,7 @@ class TrayController(QObject):
         self.last_result = result
         self.window.render(result)
         self.tray.setIcon(_pokeball_icon())
-        text = f"{compact_tokens(result.snapshot.today_tokens)} today"
-        if result.state.mon:
-            text += f" · {result.display_name}"
-        else:
-            text += " · egg"
-        self.tray.setToolTip(f"PokeTokenBar Windows · {text}")
+        self.tray.setToolTip(tray_tooltip(result))
         for event in result.events:
             if event.startswith("hatched:"):
                 sprite_icon = _icon_from_sprite(result.sprite_path)

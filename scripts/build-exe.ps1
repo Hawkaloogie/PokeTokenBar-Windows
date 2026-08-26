@@ -26,4 +26,11 @@ Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $root "dist
     --collect-all PySide6 `
     (Join-Path $root "scripts\pyinstaller_entry.py")
 
+$bundleInternal = Join-Path $root "dist\PokeTokenBar-Windows\_internal"
+# Codex can add its bundled Poppler runtime to PATH. PyInstaller then mistakes
+# Poppler's versioned ICU 78 for the unversioned Windows ICU used by Qt 6.
+foreach ($foreignIcu in @("icuuc.dll", "icudt78.dll")) {
+    Remove-Item -LiteralPath (Join-Path $bundleInternal $foreignIcu) -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "Built: dist\PokeTokenBar-Windows\PokeTokenBar-Windows.exe"

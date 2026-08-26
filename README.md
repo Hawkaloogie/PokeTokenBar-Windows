@@ -6,7 +6,7 @@ A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/P
 
 ## What works
 
-- Windows 10/11 notification-area tray icon + Qt/PySide6 window
+- Windows 10/11 notification-area tray icon + Qt/PySide6 window, with current companion and stage progress in the tray tooltip
 - Windows balloon/toast-style tray notifications for hatch/evolution/candy events
 - Animated Gen-V Pokemon sprites with static fallback, fetched and cached at runtime
 - Egg -> hatch -> real evolution path -> graduation progression
@@ -20,7 +20,7 @@ A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/P
 - Start with Windows via `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 - Local token/cost aggregation for Claude Code, Codex, Gemini CLI, OpenCode, Hermes Agent, Cursor, Grok CLI, GitHub Copilot CLI, and Kiro CLI
 - Claude official limits via `~\.claude\.credentials.json`
-- Codex official limits via `codex app-server --stdio`
+- Codex official remaining limits and available reset-credit expiry via `codex app-server --stdio`; limit windows are ordered chronologically and each reset credit stays last in its provider block, turns amber when it expires before Weekly or within one week, red within 72 hours, and adds a matching 🟠/🔴 warning to the tray tooltip
 
 ## Install
 
@@ -79,7 +79,8 @@ The existing provider environment variables above are honored. The port also sup
 
 - `PTB_STATE_DIR` — alternate state directory, useful for QA/demo isolation
 - `PTB_CACHE_DIR` — alternate Pokemon metadata/sprite cache directory
-- `CODEX_BIN` — explicit Codex executable path
+- `CODEX_BIN` — explicit Codex executable path; otherwise the current Codex Desktop binary is
+  discovered under `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe` on Windows
 
 ## Privacy
 

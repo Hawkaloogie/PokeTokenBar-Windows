@@ -7,7 +7,7 @@ if ($python) {
     & python -m pip install --user .
 }
 
-Write-Host "PokeTokenBar Windows installed."
+Write-Host "PokeTokenBar installed."
 Write-Host "Run (no console window):"
 Write-Host '  pyw -3 -m poketokenbar_windows'
 Write-Host "or:  pythonw -m poketokenbar_windows"

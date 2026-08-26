@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import subprocess
+import threading
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import LimitWindow, ProviderLimits
-from .windows import hidden_subprocess_kwargs, resolve_gui_binary
+from .models import LimitWindow, ProviderLimits, RateLimitResetCredit
+from .windows import APP_NAME, hidden_subprocess_kwargs, local_appdata, resolve_gui_binary
 
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
@@ -148,9 +151,22 @@ def fetch_claude_limits(timeout: float = 12.0) -> ProviderLimits:
 
 def _find_codex() -> str | None:
     override = os.environ.get("CODEX_BIN")
-    if override and Path(override).expanduser().exists():
-        return str(Path(override).expanduser())
-    candidates = [
+    if override:
+        override_path = Path(override).expanduser()
+        if override_path.is_file():
+            return str(override_path)
+
+    desktop_bin = local_appdata() / "OpenAI/Codex/bin"
+    desktop_candidates = [desktop_bin / "codex.exe", *desktop_bin.glob("*/codex.exe")]
+
+    def modified_time(path: Path) -> float:
+        try:
+            return path.stat().st_mtime if path.is_file() else -1.0
+        except OSError:
+            return -1.0
+
+    desktop_candidates.sort(key=modified_time, reverse=True)
+    candidates = desktop_candidates + [
         Path.home() / ".codex/bin/codex",
         Path.home() / ".codex/bin/codex.exe",
         Path.home() / ".local/bin/codex",
@@ -169,7 +185,7 @@ def _codex_request_lines() -> str:
             "method": "initialize",
             "id": 0,
             "params": {
-                "clientInfo": {"name": "poketokenbar_windows", "title": "PokeTokenBar Windows", "version": "0.1.0"},
+                "clientInfo": {"name": "poketokenbar_windows", "title": APP_NAME, "version": "0.1.0"},
                 "capabilities": {"experimentalApi": True},
             },
         },
@@ -177,6 +193,112 @@ def _codex_request_lines() -> str:
         {"method": "account/rateLimits/read", "id": 1, "params": {}},
     ]
     return "".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages)
+
+
+def _read_codex_stream(
+    source: str,
+    stream: Any,
+    messages: queue.Queue[tuple[str, str | None]],
+) -> None:
+    try:
+        for line in iter(stream.readline, ""):
+            messages.put((source, line.rstrip()))
+    finally:
+        messages.put((source, None))
+
+
+def _stop_codex_process(proc: subprocess.Popen[str]) -> None:
+    if proc.stdin is not None:
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+    if proc.poll() is None:
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+    for stream in (proc.stdout, proc.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+
+def _codex_rpc_result(binary: str, timeout: float) -> dict[str, Any]:
+    proc = subprocess.Popen(
+        [binary, "app-server", "--stdio"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        **hidden_subprocess_kwargs(),
+    )
+    if proc.stdin is None or proc.stdout is None or proc.stderr is None:
+        _stop_codex_process(proc)
+        raise RuntimeError("Codex app-server pipes are unavailable")
+
+    messages: queue.Queue[tuple[str, str | None]] = queue.Queue()
+    readers = [
+        threading.Thread(target=_read_codex_stream, args=("stdout", proc.stdout, messages), daemon=True),
+        threading.Thread(target=_read_codex_stream, args=("stderr", proc.stderr, messages), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
+    last_stderr = ""
+    deadline = time.monotonic() + timeout
+    try:
+        proc.stdin.write(_codex_request_lines())
+        proc.stdin.flush()
+        while time.monotonic() < deadline:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                source, line = messages.get(timeout=min(0.25, remaining))
+            except queue.Empty:
+                if proc.poll() is not None:
+                    break
+                continue
+            if line is None:
+                if source == "stdout" and proc.poll() is not None:
+                    break
+                continue
+            if source == "stderr":
+                last_stderr = line[-300:]
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict) or obj.get("id") != 1:
+                continue
+            error = obj.get("error")
+            if isinstance(error, dict):
+                raise RuntimeError(str(error.get("message") or error))
+            result = obj.get("result")
+            if not isinstance(result, dict):
+                raise RuntimeError("Codex app-server returned an unexpected rate-limit response")
+            return result
+
+        if proc.poll() is None:
+            raise TimeoutError("timed out waiting for the Codex rate-limit response")
+        detail = last_stderr or f"app-server exited with code {proc.returncode} without a rate-limit response"
+        raise RuntimeError(detail)
+    finally:
+        _stop_codex_process(proc)
 
 
 def _codex_window(raw: Any, label: str) -> LimitWindow | None:
@@ -198,48 +320,83 @@ def _codex_window(raw: Any, label: str) -> LimitWindow | None:
     return LimitWindow(label=label, used_percent=percent, resets_at=_parse_datetime(resets))
 
 
+def _codex_reset_credits(payload: dict[str, Any]) -> tuple[int, list[RateLimitResetCredit]]:
+    raw = payload.get("rateLimitResetCredits")
+    if raw is None:
+        raw = payload.get("rate_limit_reset_credits")
+    if not isinstance(raw, dict):
+        return 0, []
+
+    credits: list[RateLimitResetCredit] = []
+    details = raw.get("credits")
+    if isinstance(details, list):
+        for item in details:
+            if not isinstance(item, dict):
+                continue
+            status = item.get("status")
+            if status is not None and str(status).lower() != "available":
+                continue
+            expires_at = item.get("expiresAt")
+            if expires_at is None:
+                expires_at = item.get("expires_at")
+            credits.append(
+                RateLimitResetCredit(
+                    title=str(item["title"]) if item.get("title") else None,
+                    description=str(item["description"]) if item.get("description") else None,
+                    status=str(status) if status is not None else None,
+                    expires_at=_parse_datetime(expires_at),
+                )
+            )
+
+    count = raw.get("availableCount")
+    if count is None:
+        count = raw.get("available_count")
+    try:
+        available_count = max(0, int(count))
+    except (TypeError, ValueError):
+        available_count = len(credits)
+    return available_count, credits
+
+
+def _codex_rate_limit_snapshots(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return only the public Codex bucket, excluding internal metering buckets."""
+    by_id = payload.get("rateLimitsByLimitId")
+    if by_id is None:
+        by_id = payload.get("rate_limits_by_limit_id")
+    if isinstance(by_id, dict):
+        exact = by_id.get("codex")
+        if isinstance(exact, dict):
+            return [exact]
+        for item in by_id.values():
+            if not isinstance(item, dict):
+                continue
+            limit_id = item.get("limitId")
+            if limit_id is None:
+                limit_id = item.get("limit_id")
+            if limit_id == "codex":
+                return [item]
+
+    legacy = payload.get("rateLimits")
+    if legacy is None:
+        legacy = payload.get("rate_limits")
+    if isinstance(legacy, dict):
+        return [legacy]
+    if any(key in payload for key in ("primary", "secondary", "individualLimit", "individual_limit")):
+        return [payload]
+    return []
+
+
 def fetch_codex_limits(timeout: float = 20.0) -> ProviderLimits:
     binary = _find_codex()
     if binary is None:
         return ProviderLimits(provider="codex", error="codex executable not found")
     binary = resolve_gui_binary(binary)
     try:
-        proc = subprocess.run(
-            [binary, "app-server", "--stdio"],
-            input=_codex_request_lines(),
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            check=False,
-            **hidden_subprocess_kwargs(),
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+        payload = _codex_rpc_result(binary, timeout)
+    except (OSError, RuntimeError, TimeoutError, subprocess.SubprocessError) as exc:
         return ProviderLimits(provider="codex", error=f"Codex limits: {exc}")
 
-    payload: dict[str, Any] | None = None
-    for line in proc.stdout.splitlines():
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict) and obj.get("id") == 1:
-            result = obj.get("result")
-            payload = result if isinstance(result, dict) else obj
-            break
-    if payload is None:
-        detail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else "no JSON-RPC response"
-        return ProviderLimits(provider="codex", error=f"Codex limits: {detail}")
-
-    rate_limits = payload.get("rateLimits") or payload.get("rate_limits") or payload
-    snapshots: list[dict[str, Any]] = []
-    if isinstance(rate_limits, dict):
-        snapshots.append(rate_limits)
-    by_id = payload.get("rateLimitsByLimitId") or payload.get("rate_limits_by_limit_id")
-    if isinstance(by_id, dict):
-        for key in sorted(by_id):
-            item = by_id[key]
-            if isinstance(item, dict) and item not in snapshots:
-                snapshots.append(item)
+    snapshots = _codex_rate_limit_snapshots(payload)
 
     windows: list[LimitWindow] = []
     plan: str | None = None
@@ -262,7 +419,14 @@ def fetch_codex_limits(timeout: float = 20.0) -> ProviderLimits:
             if used is not None:
                 windows.append(LimitWindow(label=f"{name} spend", used_percent=used, resets_at=_parse_datetime(individual.get("resetsAt") or individual.get("resets_at"))))
 
-    return ProviderLimits(provider="codex", plan=str(plan).title() if plan else None, windows=windows)
+    reset_credits_available, reset_credits = _codex_reset_credits(payload)
+    return ProviderLimits(
+        provider="codex",
+        plan=str(plan).title() if plan else None,
+        windows=windows,
+        reset_credits_available=reset_credits_available,
+        reset_credits=reset_credits,
+    )
 
 
 def fetch_all_limits() -> dict[str, ProviderLimits]:

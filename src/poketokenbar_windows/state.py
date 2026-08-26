@@ -77,6 +77,18 @@ class GameState:
         return self.inventory.get("shiny_charm", 0) > 0
 
 
+def companion_progress_percent(state: GameState) -> int:
+    """Return whole-percent progress for the active egg or Pokemon stage."""
+    if state.mon is None:
+        value = state.egg_usage
+        target = EGG_HATCH_THRESHOLD
+    else:
+        mon = state.mon
+        value = mon.used_at_stage
+        target = phase_threshold(mon.rarity, len(mon.path_ids), mon.stage_index)
+    return min(100, max(0, value * 100 // max(1, target)))
+
+
 class StateStore:
     def __init__(self, path: Path | None = None):
         self.path = path or state_dir() / "state.json"
