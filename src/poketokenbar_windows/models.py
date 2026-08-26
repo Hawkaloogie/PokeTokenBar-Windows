@@ -69,10 +69,24 @@ class LimitWindow:
     used_percent: float
     resets_at: datetime | None = None
 
+    @property
+    def remaining_percent(self) -> float:
+        return max(0.0, min(100.0, 100.0 - self.used_percent))
+
+
+@dataclass(slots=True)
+class RateLimitResetCredit:
+    title: str | None = None
+    description: str | None = None
+    status: str | None = None
+    expires_at: datetime | None = None
+
 
 @dataclass(slots=True)
 class ProviderLimits:
     provider: str
     plan: str | None = None
     windows: list[LimitWindow] = field(default_factory=list)
+    reset_credits_available: int = 0
+    reset_credits: list[RateLimitResetCredit] = field(default_factory=list)
     error: str | None = None
