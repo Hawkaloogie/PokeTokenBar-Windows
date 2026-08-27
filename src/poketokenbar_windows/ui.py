@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import copy
+import json
+import os
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -25,6 +28,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSystemTrayIcon,
     QTabWidget,
     QVBoxLayout,
@@ -38,8 +42,15 @@ from .formatting import (
     money,
     provider_limit_rows,
 )
+from .floating_pet import (
+    PET_ALERTS_KEY,
+    PET_ENABLED_KEY,
+    PET_SIZE_KEY,
+    FloatingPetController,
+)
 from .limits import fetch_all_limits
 from .models import ProviderLimits, UsageSnapshot
+from .pet_logic import PET_DEFAULT_SIZE, PET_MAX_SIZE, PET_MIN_SIZE, PET_SIZE_STEP, normalize_pet_size, settings_bool
 from .pokemon import EGG_HATCH_THRESHOLD, PokeAPIClient, egg_price, phase_threshold
 from .state import (
     GameState,
@@ -49,11 +60,14 @@ from .state import (
     buy_egg,
     buy_item,
     companion_progress_percent,
+    owned_representative_options,
+    representative_subject,
+    set_representative,
     usage_delta,
     use_item,
 )
 from .usage import PROVIDER_LABELS, scan_all
-from .windows import APP_NAME, apply_native_window_icon, autostart_enabled, cache_dir, set_autostart
+from .windows import APP_NAME, apply_native_window_icon, autostart_enabled, cache_dir, set_autostart, state_dir
 
 
 @dataclass(slots=True)
@@ -65,6 +79,18 @@ class RefreshResult:
     events: list[str]
     sprite_path: Path | None
     display_name: str
+    pet_sprite_path: Path | None
+    pet_display_name: str
+    pet_is_egg: bool
+
+
+def application_settings() -> QSettings:
+    """Use an isolated INI backend for QA while preserving production registry settings."""
+    if os.environ.get("PTB_STATE_DIR", "").strip():
+        path = state_dir() / "settings.ini"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return QSettings(str(path), QSettings.Format.IniFormat)
+    return QSettings("PokeTokenBar", "PokeTokenBar-Windows")
 
 
 def tray_tooltip(result: RefreshResult) -> str:
@@ -283,6 +309,10 @@ class MetricCard(QFrame):
 
 class MainWindow(QMainWindow):
     refresh_requested = Signal()
+    floating_pet_enabled_changed = Signal(bool)
+    floating_pet_size_changed = Signal(int)
+    floating_pet_alerts_changed = Signal(bool)
+    representative_changed = Signal(object)
 
     def __init__(self, state: GameState, settings: QSettings, api: PokeAPIClient):
         super().__init__()
@@ -459,6 +489,52 @@ class MainWindow(QMainWindow):
         self.autostart_check.toggled.connect(self._toggle_autostart)
         layout.addWidget(self.autostart_check)
 
+        pet_heading = QLabel("Floating desktop pet")
+        pet_font = pet_heading.font()
+        pet_font.setBold(True)
+        pet_heading.setFont(pet_font)
+        layout.addWidget(pet_heading)
+
+        self.floating_pet_check = QCheckBox("Show the interactive pet on the desktop")
+        self.floating_pet_check.setChecked(
+            settings_bool(self.settings.value(PET_ENABLED_KEY, False), False)
+        )
+        self.floating_pet_check.toggled.connect(self._pet_enabled_toggled)
+        layout.addWidget(self.floating_pet_check)
+
+        size_row = QHBoxLayout()
+        size_row.addWidget(QLabel("Pet size"))
+        self.pet_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.pet_size_slider.setRange(PET_MIN_SIZE, PET_MAX_SIZE)
+        self.pet_size_slider.setSingleStep(PET_SIZE_STEP)
+        self.pet_size_slider.setPageStep(PET_SIZE_STEP)
+        self.pet_size_slider.setTickInterval(PET_SIZE_STEP)
+        initial_size = normalize_pet_size(self.settings.value(PET_SIZE_KEY, PET_DEFAULT_SIZE))
+        self.pet_size_slider.setValue(initial_size)
+        self.pet_size_slider.valueChanged.connect(self._pet_size_value_changed)
+        self.pet_size_value = QLabel(f"{initial_size}px")
+        self.pet_size_value.setMinimumWidth(42)
+        size_row.addWidget(self.pet_size_slider, 1)
+        size_row.addWidget(self.pet_size_value)
+        layout.addLayout(size_row)
+
+        self.floating_pet_alerts_check = QCheckBox("Show transient usage and full-reset bubbles")
+        self.floating_pet_alerts_check.setChecked(
+            settings_bool(self.settings.value(PET_ALERTS_KEY, True), True)
+        )
+        self.floating_pet_alerts_check.toggled.connect(self.floating_pet_alerts_changed.emit)
+        layout.addWidget(self.floating_pet_alerts_check)
+
+        representative_row = QHBoxLayout()
+        representative_row.addWidget(QLabel("Pet Pokémon"))
+        self.representative_combo = QComboBox()
+        self.representative_combo.setMinimumWidth(220)
+        self.representative_combo.currentIndexChanged.connect(self._representative_selection_changed)
+        representative_row.addWidget(self.representative_combo, 1)
+        layout.addLayout(representative_row)
+        self._render_representative_settings()
+        self._set_pet_controls_enabled(self.floating_pet_check.isChecked())
+
         note = QLabel(
             "Data is read locally from supported AI coding tools. Pokemon metadata and sprites are fetched "
             "from PokeAPI/PokeAPI sprites. Claude/Codex official limit checks use their existing local credentials/processes."
@@ -481,10 +557,69 @@ class MainWindow(QMainWindow):
             self.autostart_check.blockSignals(False)
             QMessageBox.warning(self, "Autostart", str(exc))
 
+    def _pet_enabled_toggled(self, enabled: bool) -> None:
+        self._set_pet_controls_enabled(enabled)
+        self.floating_pet_enabled_changed.emit(enabled)
+
+    def _set_pet_controls_enabled(self, enabled: bool) -> None:
+        self.pet_size_slider.setEnabled(enabled)
+        self.pet_size_value.setEnabled(enabled)
+        self.floating_pet_alerts_check.setEnabled(enabled)
+
+    def _pet_size_value_changed(self, value: int) -> None:
+        normalized = normalize_pet_size(value)
+        if normalized != value:
+            self.pet_size_slider.blockSignals(True)
+            self.pet_size_slider.setValue(normalized)
+            self.pet_size_slider.blockSignals(False)
+        self.pet_size_value.setText(f"{normalized}px")
+        self.floating_pet_size_changed.emit(normalized)
+
+    def _representative_selection_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        self.representative_changed.emit(self.representative_combo.itemData(index))
+
+    def _render_representative_settings(self) -> None:
+        if not hasattr(self, "representative_combo"):
+            return
+        selected = (
+            None
+            if self.state.representative_species_id is None
+            else (self.state.representative_species_id, bool(self.state.representative_is_shiny))
+        )
+        self.representative_combo.blockSignals(True)
+        self.representative_combo.clear()
+        self.representative_combo.addItem("Current egg / Pokémon", None)
+        selected_index = 0
+        for subject in owned_representative_options(self.state):
+            assert subject.species_id is not None
+            name = self.api.localized_name(subject.species_id, self.state.language)
+            label = f"{'✨ ' if subject.is_shiny else ''}#{subject.species_id:03d} {name}"
+            data = (subject.species_id, subject.is_shiny)
+            self.representative_combo.addItem(label, data)
+            if data == selected:
+                selected_index = self.representative_combo.count() - 1
+        self.representative_combo.setCurrentIndex(selected_index)
+        self.representative_combo.blockSignals(False)
+
+    def sync_floating_pet_settings(self, *, enabled: bool | None = None, size: int | None = None) -> None:
+        if enabled is not None and self.floating_pet_check.isChecked() != enabled:
+            self.floating_pet_check.blockSignals(True)
+            self.floating_pet_check.setChecked(enabled)
+            self.floating_pet_check.blockSignals(False)
+            self._set_pet_controls_enabled(enabled)
+        if size is not None and self.pet_size_slider.value() != size:
+            self.pet_size_slider.blockSignals(True)
+            self.pet_size_slider.setValue(size)
+            self.pet_size_slider.blockSignals(False)
+            self.pet_size_value.setText(f"{size}px")
+
     def set_state(self, state: GameState) -> None:
         self.state = state
         self._render_bag_shop()
         self._render_collection()
+        self._render_representative_settings()
 
     def render(self, result: RefreshResult) -> None:
         self.state = result.state
@@ -540,6 +675,7 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(f"{compact_tokens(value)} / {compact_tokens(target)}")
         self._render_collection()
         self._render_bag_shop()
+        self._render_representative_settings()
         self.refresh_button.setEnabled(True)
 
     def _set_sprite(self, path: Path | None, *, egg: bool = False) -> None:
@@ -597,12 +733,9 @@ class MainWindow(QMainWindow):
 
     def _owned_species(self) -> dict[int, bool]:
         owned: dict[int, bool] = {}
-        current = self._current_catch()
-        for catch in self.state.catches:
-            path = catch.path_ids or [catch.species_id]
-            limit = (self.state.mon.stage_index + 1) if (catch is current and self.state.mon) else len(path)
-            for species_id in path[:limit]:
-                owned[species_id] = owned.get(species_id, False) or catch.is_shiny
+        for subject in owned_representative_options(self.state):
+            assert subject.species_id is not None
+            owned[subject.species_id] = owned.get(subject.species_id, False) or subject.is_shiny
         return owned
 
     def _dex_cell(self, species_id: int, *, shiny: bool) -> QFrame:
@@ -736,7 +869,7 @@ class TrayController(QObject):
     def __init__(self, app: QApplication):
         super().__init__()
         self.app = app
-        self.settings = QSettings("PokeTokenBar", "PokeTokenBar-Windows")
+        self.settings = application_settings()
         self.store = StateStore()
         self.state = self.store.load()
         self.api = PokeAPIClient(_data_cache_dir())
@@ -746,7 +879,9 @@ class TrayController(QObject):
         self.bridge.failed.connect(self._on_failed)
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="poketokenbar-refresh")
         self.refresh_running = False
+        self.refresh_pending = False
         self.last_result: RefreshResult | None = None
+        self.qa_capture_scheduled = False
 
         self.window = MainWindow(self.state, self.settings, self.api)
         self.window.refresh_requested.connect(self._refresh_and_reschedule)
@@ -768,6 +903,22 @@ class TrayController(QObject):
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._tray_activated)
         self.tray.show()
+
+        self.floating_pet = FloatingPetController(self.app, self.settings, self.show_window)
+        self.window.floating_pet_enabled_changed.connect(self.floating_pet.set_enabled)
+        self.window.floating_pet_size_changed.connect(self.floating_pet.set_size)
+        self.window.floating_pet_alerts_changed.connect(self.floating_pet.set_alerts_enabled)
+        self.window.representative_changed.connect(self._select_representative)
+        self.floating_pet.enabled_changed.connect(
+            lambda enabled: self.window.sync_floating_pet_settings(enabled=enabled)
+        )
+        self.floating_pet.size_changed.connect(
+            lambda size: self.window.sync_floating_pet_settings(size=size)
+        )
+        self.window.sync_floating_pet_settings(
+            enabled=self.floating_pet.enabled,
+            size=self.floating_pet.size,
+        )
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
@@ -804,6 +955,7 @@ class TrayController(QObject):
 
     def refresh(self) -> None:
         if self.refresh_running:
+            self.refresh_pending = True
             return
         self.refresh_running = True
         self.window.refresh_button.setEnabled(False)
@@ -823,12 +975,32 @@ class TrayController(QObject):
                 events.extend(apply_limit_rewards(candidate, limits))
                 mon = candidate.mon
                 sprite = self.api.sprite_path(mon.current_id, shiny=mon.is_shiny) if mon else self.api.egg_sprite_path()
+                pet_subject = representative_subject(candidate)
+                pet_sprite = (
+                    self.api.sprite_path(pet_subject.species_id, shiny=pet_subject.is_shiny)
+                    if pet_subject.species_id is not None else self.api.egg_sprite_path()
+                )
                 self._prefetch_collection(candidate)
                 display_name = self.api.localized_name(mon.current_id, candidate.language) if mon else "Pokemon Egg"
+                pet_display_name = (
+                    self.api.localized_name(pet_subject.species_id, candidate.language)
+                    if pet_subject.species_id is not None else "Pokemon Egg"
+                )
                 self.store.save(candidate)
                 self.state = candidate
                 state = candidate
-            self.bridge.refreshed.emit(RefreshResult(snapshot, limits, errors, state, events, sprite, display_name))
+            self.bridge.refreshed.emit(RefreshResult(
+                snapshot=snapshot,
+                limits=limits,
+                scan_errors=errors,
+                state=state,
+                events=events,
+                sprite_path=sprite,
+                display_name=display_name,
+                pet_sprite_path=pet_sprite,
+                pet_display_name=pet_display_name,
+                pet_is_egg=pet_subject.is_egg,
+            ))
         except Exception as exc:
             self.bridge.failed.emit(f"{type(exc).__name__}: {exc}")
 
@@ -847,6 +1019,8 @@ class TrayController(QObject):
         self.window.render(result)
         self.tray.setIcon(_pokeball_icon())
         self.tray.setToolTip(tray_tooltip(result))
+        self.floating_pet.update(result)
+        self._schedule_qa_capture()
         for event in result.events:
             if event.startswith("hatched:"):
                 sprite_icon = _icon_from_sprite(result.sprite_path)
@@ -859,13 +1033,61 @@ class TrayController(QObject):
                 parts = event.split(":", 3)
                 count = parts[1] if len(parts) > 1 else "1"
                 self.tray.showMessage("Rare Candy earned!", f"You earned {count} Rare Candy.", QSystemTrayIcon.MessageIcon.Information, 5000)
+        if self.refresh_pending:
+            self.refresh_pending = False
+            QTimer.singleShot(0, self.refresh)
+
+    def _schedule_qa_capture(self) -> None:
+        target = os.environ.get("PTB_QA_ARTIFACT_DIR", "").strip()
+        if not target or self.qa_capture_scheduled:
+            return
+        self.qa_capture_scheduled = True
+        QTimer.singleShot(1_000, lambda: self._write_qa_artifacts(Path(target)))
+
+    def _write_qa_artifacts(self, target: Path) -> None:
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            main_path = target / "main-window.png"
+            settings_path = target / "settings-tab.png"
+            pet_path = target / "floating-pet.png"
+            hover_path = target / "hover-callout.png"
+            self.window.grab().save(str(main_path), "PNG")
+            tabs = self.window.centralWidget()
+            if isinstance(tabs, QTabWidget):
+                current_tab = tabs.currentIndex()
+                tabs.setCurrentIndex(tabs.count() - 1)
+                QApplication.processEvents()
+                self.window.grab().save(str(settings_path), "PNG")
+                tabs.setCurrentIndex(current_tab)
+            self.floating_pet.pet.grab().save(str(pet_path), "PNG")
+            self.floating_pet.hover.grab().save(str(hover_path), "PNG")
+            report = {
+                "pid": os.getpid(),
+                "executable": sys.executable,
+                "frozen": bool(getattr(sys, "frozen", False)),
+                "settings_file": self.settings.fileName(),
+                "state_file": str(self.store.path),
+                "main_visible": self.window.isVisible(),
+                "main_size": [self.window.width(), self.window.height()],
+                "tray_visible": self.tray.isVisible(),
+                "tray_tooltip": self.tray.toolTip(),
+                "pet": self.floating_pet.qa_snapshot(),
+            }
+            tmp = target / "qa-report.tmp"
+            tmp.write_text(json.dumps(report, indent=2), encoding="utf-8")
+            tmp.replace(target / "qa-report.json")
+        except Exception:
+            self.qa_capture_scheduled = False
 
     def _on_failed(self, message: str) -> None:
         self.refresh_running = False
         self.window.refresh_button.setEnabled(True)
         self.tray.showMessage("PokeTokenBar refresh failed", message, QSystemTrayIcon.MessageIcon.Warning, 5000)
+        if self.refresh_pending:
+            self.refresh_pending = False
+            QTimer.singleShot(0, self.refresh)
 
-    def _mutate_state(self, operation: Callable[[GameState], tuple[bool, str] | tuple[bool, str, list[str]]]) -> None:
+    def _mutate_state(self, operation: Callable[[GameState], tuple[bool, str] | tuple[bool, str, list[str]]]) -> bool:
         try:
             with self.state_lock:
                 candidate = copy.deepcopy(self.state)
@@ -878,13 +1100,14 @@ class TrayController(QObject):
                     self.state = candidate
         except Exception as exc:
             QMessageBox.warning(self.window, "PokeTokenBar", f"{type(exc).__name__}: {exc}")
-            return
+            return False
         if not ok:
             QMessageBox.information(self.window, "PokeTokenBar", message)
-            return
+            return False
         self.window.set_state(self.state)
         if events:
             self.refresh()
+        return True
 
     def _buy_item(self, item: str) -> None:
         self._mutate_state(lambda state: buy_item(state, item))
@@ -893,10 +1116,37 @@ class TrayController(QObject):
         self._mutate_state(lambda state: use_item(state, item, self.api))
 
     def _buy_egg(self, tier: str | None) -> None:
-        self._mutate_state(lambda state: buy_egg(state, tier))
+        if self._mutate_state(lambda state: buy_egg(state, tier)):
+            self.refresh()
+
+    def _select_representative(self, selection: object) -> None:
+        species_id: int | None = None
+        is_shiny: bool | None = None
+        if isinstance(selection, tuple) and len(selection) == 2:
+            species_id = int(selection[0])
+            is_shiny = bool(selection[1])
+        try:
+            with self.state_lock:
+                candidate = copy.deepcopy(self.state)
+                if not set_representative(candidate, species_id, is_shiny):
+                    QMessageBox.information(
+                        self.window,
+                        "PokeTokenBar",
+                        "That Pokémon is not currently owned.",
+                    )
+                    self.window.set_state(self.state)
+                    return
+                self.store.save(candidate)
+                self.state = candidate
+        except Exception as exc:
+            QMessageBox.warning(self.window, "PokeTokenBar", f"{type(exc).__name__}: {exc}")
+            return
+        self.window.set_state(self.state)
+        self.refresh()
 
     def quit(self) -> None:
         self.store.save(self.state)
+        self.floating_pet.shutdown()
         self.tray.hide()
         self.executor.shutdown(wait=False, cancel_futures=True)
         self.app.quit()

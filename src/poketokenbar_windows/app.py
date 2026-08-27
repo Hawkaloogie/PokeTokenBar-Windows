@@ -11,7 +11,8 @@ def _configure_windows_identity() -> None:
     if os.name != "nt":
         return
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PokeTokenBar.Windows")
+        app_id = "PokeTokenBar.Windows.Isolated" if os.environ.get("PTB_STATE_DIR", "").strip() else "PokeTokenBar.Windows"
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
     except (AttributeError, OSError):
         pass
 
@@ -42,7 +43,8 @@ def main() -> int:
     app.setQuitOnLastWindowClosed(False)
 
     controller = TrayController(app)
-    if not QSystemTrayIcon.isSystemTrayAvailable():
+    show_main = os.environ.get("PTB_SHOW_MAIN", "").strip().lower() in {"1", "true", "yes", "on"}
+    if show_main or not QSystemTrayIcon.isSystemTrayAvailable():
         # Remote Desktop / restricted shells can temporarily hide the notification area.
         controller.window.show()
 
