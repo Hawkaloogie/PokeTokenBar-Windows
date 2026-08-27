@@ -21,6 +21,9 @@ from .pokemon import (
 )
 
 
+STATE_VERSION = 2
+
+
 @dataclass(slots=True)
 class MonState:
     base_id: int
@@ -51,7 +54,7 @@ class CatchRecord:
 
 @dataclass(slots=True)
 class GameState:
-    version: int = 1
+    version: int = STATE_VERSION
     egg_usage: int = 0
     egg_tier: str | None = None
     mon: MonState | None = None
@@ -64,6 +67,7 @@ class GameState:
     last_day: str = ""  # legacy aggregate baseline (pre-0.1 state)
     last_today_tokens: int = 0  # legacy aggregate baseline (pre-0.1 state)
     representative_species_id: int | None = None
+    representative_is_shiny: bool | None = None
     language: str = "en"
     claimed_limit_windows: list[str] = field(default_factory=list)
     candy_feature_seeded: bool = False
@@ -75,6 +79,114 @@ class GameState:
     @property
     def shiny_charm_active(self) -> bool:
         return self.inventory.get("shiny_charm", 0) > 0
+
+
+@dataclass(slots=True, frozen=True)
+class RepresentativeSubject:
+    species_id: int | None
+    is_shiny: bool = False
+
+    @property
+    def is_egg(self) -> bool:
+        return self.species_id is None
+
+
+def _current_catch(state: GameState) -> CatchRecord | None:
+    mon = state.mon
+    if mon is None:
+        return None
+    for catch in reversed(state.catches):
+        if (
+            catch.base_id == mon.base_id
+            and catch.path_ids == mon.path_ids
+            and catch.nature == mon.nature
+            and catch.is_shiny == mon.is_shiny
+        ):
+            return catch
+    return None
+
+
+def owned_representative_options(state: GameState) -> list[RepresentativeSubject]:
+    """Return every actually-owned species/variant eligible as representative."""
+    current = _current_catch(state)
+    owned: set[tuple[int, bool]] = set()
+    for catch in state.catches:
+        path = catch.path_ids or [catch.species_id]
+        if catch is current and state.mon is not None:
+            limit = min(len(path), max(0, state.mon.stage_index) + 1)
+        else:
+            limit = len(path)
+        for species_id in path[:limit]:
+            if isinstance(species_id, int) and species_id > 0:
+                owned.add((species_id, bool(catch.is_shiny)))
+    return [RepresentativeSubject(species_id, shiny) for species_id, shiny in sorted(owned)]
+
+
+def representative_subject(state: GameState) -> RepresentativeSubject:
+    """Resolve the display subject without ever changing the actively-raised Pokemon."""
+    options = owned_representative_options(state)
+    requested_id = state.representative_species_id
+    if isinstance(requested_id, int) and requested_id > 0:
+        candidates = [item for item in options if item.species_id == requested_id]
+        if state.representative_is_shiny is not None:
+            exact = next(
+                (item for item in candidates if item.is_shiny == state.representative_is_shiny),
+                None,
+            )
+            if exact is not None:
+                return exact
+        if candidates:
+            # Legacy saves only stored the species ID. Prefer the shiny variant when
+            # available so migrating cannot silently discard its appearance.
+            return next((item for item in candidates if item.is_shiny), candidates[0])
+
+    if state.mon is not None:
+        return RepresentativeSubject(state.mon.current_id, state.mon.is_shiny)
+    return RepresentativeSubject(None, False)
+
+
+def set_representative(
+    state: GameState,
+    species_id: int | None,
+    is_shiny: bool | None = None,
+) -> bool:
+    """Select an owned representative, or ``None`` to follow the active companion."""
+    if species_id is None:
+        state.representative_species_id = None
+        state.representative_is_shiny = None
+        return True
+    candidates = [item for item in owned_representative_options(state) if item.species_id == species_id]
+    if is_shiny is not None:
+        candidates = [item for item in candidates if item.is_shiny == bool(is_shiny)]
+    if not candidates:
+        return False
+    selected = next((item for item in candidates if item.is_shiny), candidates[0])
+    state.representative_species_id = selected.species_id
+    state.representative_is_shiny = selected.is_shiny
+    return True
+
+
+def normalize_representative(state: GameState) -> None:
+    """Migrate a legacy selection to an owned variant or recover to current mode."""
+    species_id = state.representative_species_id
+    if species_id is None:
+        state.representative_is_shiny = None
+        return
+    options = [item for item in owned_representative_options(state) if item.species_id == species_id]
+    selected = None
+    if state.representative_is_shiny is not None:
+        selected = next(
+            (item for item in options if item.is_shiny == state.representative_is_shiny),
+            None,
+        )
+    if selected is None and options:
+        selected = next((item for item in options if item.is_shiny), options[0])
+    if selected is None:
+        state.representative_species_id = None
+        state.representative_is_shiny = None
+        return
+    state.representative_species_id = selected.species_id
+    state.representative_is_shiny = selected.is_shiny
 
 
 def companion_progress_percent(state: GameState) -> int:
@@ -105,8 +217,17 @@ class StateStore:
             mon_raw = raw.get("mon")
             mon = MonState(**mon_raw) if isinstance(mon_raw, dict) else None
             catches = [CatchRecord(**item) for item in raw.get("catches", []) if isinstance(item, dict)]
+            representative_raw = raw.get("representative_species_id")
+            try:
+                representative_species_id = int(representative_raw) if representative_raw is not None else None
+                if representative_species_id is not None and representative_species_id <= 0:
+                    representative_species_id = None
+            except (TypeError, ValueError):
+                representative_species_id = None
+            shiny_raw = raw.get("representative_is_shiny")
+            representative_is_shiny = shiny_raw if isinstance(shiny_raw, bool) else None
             state = GameState(
-                version=int(raw.get("version", 1)),
+                version=STATE_VERSION,
                 egg_usage=int(raw.get("egg_usage", 0)),
                 egg_tier=raw.get("egg_tier"),
                 mon=mon,
@@ -121,13 +242,15 @@ class StateStore:
                 ),
                 last_day=str(raw.get("last_day", "")),
                 last_today_tokens=int(raw.get("last_today_tokens", 0)),
-                representative_species_id=raw.get("representative_species_id"),
+                representative_species_id=representative_species_id,
+                representative_is_shiny=representative_is_shiny,
                 language=str(raw.get("language", "en")),
                 claimed_limit_windows=[str(v) for v in raw.get("claimed_limit_windows", [])],
                 candy_feature_seeded=bool(raw.get("candy_feature_seeded", False)),
             )
             for key in ("rare_candy", "mint", "shiny_charm"):
                 state.inventory.setdefault(key, 0)
+            normalize_representative(state)
             return state
         except (TypeError, ValueError, AttributeError):
             return GameState()
@@ -313,6 +436,7 @@ def buy_egg(state: GameState, tier: str | None) -> tuple[bool, str]:
     state.mon = None
     state.egg_usage = 0
     state.egg_tier = tier
+    normalize_representative(state)
     return True, "Fresh egg ready"
 
 
