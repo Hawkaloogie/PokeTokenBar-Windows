@@ -7,6 +7,8 @@ A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/P
 ## What works
 
 - Windows 10/11 notification-area tray icon + Qt/PySide6 window, with current companion and stage progress in the tray tooltip
+- Opt-in interactive floating desktop pet: animated egg/Pokemon, 48–192 px sizing, drag-and-drop position persistence, hover usage/official-limit callout, click-to-open, context-menu hide, and transient limit/full-reset bubbles
+- Optional owned representative Pokemon for the desktop pet, independent of the actively progressing companion and preserving shiny variants
 - Windows balloon/toast-style tray notifications for hatch/evolution/candy events
 - Animated Gen-V Pokemon sprites with static fallback, fetched and cached at runtime
 - Egg -> hatch -> real evolution path -> graduation progression
@@ -79,6 +81,8 @@ The existing provider environment variables above are honored. The port also sup
 
 - `PTB_STATE_DIR` — alternate state directory, useful for QA/demo isolation
 - `PTB_CACHE_DIR` — alternate Pokemon metadata/sprite cache directory
+- `PTB_SHOW_MAIN` — show the main window on launch, useful for isolated GUI QA and restricted shells
+- `PTB_QA_ARTIFACT_DIR` — write one opt-in real-widget QA capture and native-window report after refresh
 - `CODEX_BIN` — explicit Codex executable path; otherwise the current Codex Desktop binary is
   discovered under `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe` on Windows
 
@@ -98,11 +102,11 @@ Codex official limits use a local child process. The app does not upload your lo
 This is a serious first Windows port, not a bit-for-bit rewrite of the SwiftUI app. Current gaps:
 
 - Antigravity's protobuf-in-SQLite reader is not ported yet.
-- The floating desktop pet is not yet implemented; the companion lives in the tray and main window.
 - Kiro's Windows database location is probed across likely AppData layouts because its local layout has changed between releases; `KIRO_CLI_HOME` is the authoritative override.
 - Codex fork/replay dedup is simplified versus upstream's deep parent-rollout reconciliation. Normal `token_count` snapshots are deduplicated, but pathological fork histories may differ slightly.
 - Provider incident banners and in-app self-updater are not included yet.
 - UI localization is not yet ported; Pokemon names can already be resolved through PokeAPI language data in the core.
+- Virtual-desktop behavior is intentionally scoped to the current Windows virtual desktop; all of its monitors are supported, including negative coordinates and mixed-DPI layouts.
 - The actual GUI/notification-area behavior must be validated on a Windows desktop; non-UI core and packaging checks can run cross-platform.
 
 ## Tests
