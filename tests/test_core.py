@@ -49,6 +49,8 @@ from poketokenbar_windows.windows import (
     APP_NAME,
     REGISTRY_VALUE_NAME,
     cache_dir,
+    claude_desktop_roots,
+    claude_plan_usage_paths,
     cursor_database_candidates,
     kiro_database_candidates,
     state_dir,
@@ -329,6 +331,63 @@ class WindowsIntegrationTests(unittest.TestCase):
         kwargs = hidden_subprocess_kwargs()
         self.assertIn("creationflags", kwargs)
         self.assertEqual(resolve_gui_binary(r"C:\missing-codex.cmd"), r"C:\missing-codex.cmd")
+
+    def test_microsoft_store_claude_paths_are_discovered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local_root = Path(tmp) / "Local"
+            roaming_root = Path(tmp) / "Roaming"
+            store_data = local_root / "Packages/Claude_test/LocalCache/Roaming/Claude"
+            store_data.mkdir(parents=True)
+            with (
+                patch("poketokenbar_windows.windows.local_appdata", return_value=local_root),
+                patch("poketokenbar_windows.windows.roaming_appdata", return_value=roaming_root),
+            ):
+                self.assertIn(store_data / "local-agent-mode-sessions", claude_desktop_roots())
+                self.assertIn(store_data / "claude-code-sessions", claude_desktop_roots())
+                self.assertIn(store_data / "plan-usage-history.json", claude_plan_usage_paths())
+
+
+class ClaudeLimitsTests(unittest.TestCase):
+    def test_falls_back_to_fresh_microsoft_store_plan_history(self):
+        now = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            history = Path(tmp) / "plan-usage-history.json"
+            history.write_text(json.dumps({
+                "version": 2,
+                "samples": [
+                    {"t": int((now - timedelta(minutes=15)).timestamp() * 1000), "u": {"fh": 21, "sd": 59}},
+                ],
+            }), encoding="utf-8")
+            with patch.object(limits_module, "claude_plan_usage_paths", return_value=[history]):
+                result = limits_module._read_claude_local_limits(now)
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIsNone(result.error)
+        self.assertEqual([(item.label, item.used_percent) for item in result.windows], [
+            ("5-hour", 21.0),
+            ("Weekly", 59.0),
+        ])
+
+    def test_stale_plan_history_is_not_reported(self):
+        now = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            history = Path(tmp) / "plan-usage-history.json"
+            history.write_text(json.dumps({
+                "version": 2,
+                "samples": [
+                    {"t": int((now - timedelta(hours=2)).timestamp() * 1000), "u": {"fh": 21, "sd": 59}},
+                ],
+            }), encoding="utf-8")
+            with patch.object(limits_module, "claude_plan_usage_paths", return_value=[history]):
+                self.assertIsNone(limits_module._read_claude_local_limits(now))
+
+    def test_fetch_uses_local_history_when_oauth_is_unavailable(self):
+        local = ProviderLimits(provider="claude", windows=[LimitWindow("Weekly", 59.0)])
+        with (
+            patch.object(limits_module, "_read_claude_oauth", return_value=None),
+            patch.object(limits_module, "_read_claude_local_limits", return_value=local),
+        ):
+            self.assertIs(limits_module.fetch_claude_limits(), local)
 
 
 class CodexLimitsTests(unittest.TestCase):

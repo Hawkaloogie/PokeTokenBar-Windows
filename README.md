@@ -61,7 +61,7 @@ The Windows port reads the same underlying local formats as upstream and uses na
 
 | Tool | Windows locations / behavior |
 |---|---|
-| Claude Code | `$env:CLAUDE_CONFIG_DIR\projects`, `%USERPROFILE%\.config\claude\projects`, `%USERPROFILE%\.claude\projects`; Claude Desktop session stores under AppData are also probed |
+| Claude Code | `$env:CLAUDE_CONFIG_DIR\projects`, `%USERPROFILE%\.config\claude\projects`, `%USERPROFILE%\.claude\projects`; classic and Microsoft Store Claude Desktop session stores under AppData are also probed |
 | Codex | `$env:CODEX_HOME\sessions` or `%USERPROFILE%\.codex\sessions`, plus `archived_sessions` |
 | Gemini CLI | `%USERPROFILE%\.gemini\tmp\**\chats\*.json(l)` |
 | OpenCode | `$env:OPENCODE_DATA_DIR` or `%USERPROFILE%\.local\share\opencode` (the Windows location documented by OpenCode) |
@@ -71,7 +71,7 @@ The Windows port reads the same underlying local formats as upstream and uses na
 | Copilot CLI | `$env:COPILOT_HOME\session-store.db` or `%USERPROFILE%\.copilot\session-store.db` |
 | Kiro CLI | `$env:KIRO_CLI_HOME\data.sqlite3`, plus Local/Roaming AppData and `%USERPROFILE%\.kiro` candidates |
 
-No model turn is started to collect usage. Claude limits make an authenticated GET to Anthropic's OAuth usage endpoint using Claude Code's existing local OAuth token. Codex limits query the local Codex app-server account snapshot.
+No model turn is started to collect usage. Claude limits make an authenticated GET to Anthropic's OAuth usage endpoint using Claude Code's existing local OAuth token. When current Microsoft Store builds keep authentication inside their app container, the fresh local `plan-usage-history.json` is used as a fallback. Codex limits query the local Codex app-server account snapshot.
 
 ### Overrides
 

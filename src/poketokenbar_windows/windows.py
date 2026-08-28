@@ -39,12 +39,42 @@ def cache_dir() -> Path:
 
 def claude_desktop_roots() -> list[Path]:
     """Best-effort native Windows Claude Desktop embedded-session roots."""
-    return [
-        roaming_appdata() / "Claude/local-agent-mode-sessions",
-        roaming_appdata() / "Claude/claude-code-sessions",
-        local_appdata() / "Claude/local-agent-mode-sessions",
-        local_appdata() / "Claude/claude-code-sessions",
-    ]
+    roots: list[Path] = []
+    for data_root in claude_desktop_data_roots():
+        roots.extend([
+            data_root / "local-agent-mode-sessions",
+            data_root / "claude-code-sessions",
+        ])
+    return roots
+
+
+def claude_desktop_data_roots() -> list[Path]:
+    """Return classic and Microsoft Store data roots for Claude Desktop."""
+    roots = [roaming_appdata() / "Claude", local_appdata() / "Claude"]
+    packages = local_appdata() / "Packages"
+    try:
+        store_packages = sorted(packages.glob("Claude_*"))
+    except OSError:
+        store_packages = []
+    roots.extend(
+        package / "LocalCache/Roaming/Claude"
+        for package in store_packages
+        if package.is_dir()
+    )
+
+    out: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root.resolve(strict=False)).casefold()
+        if key not in seen:
+            seen.add(key)
+            out.append(root)
+    return out
+
+
+def claude_plan_usage_paths() -> list[Path]:
+    """Candidate local histories written by current Claude Desktop builds."""
+    return [root / "plan-usage-history.json" for root in claude_desktop_data_roots()]
 
 
 def cursor_database_candidates() -> list[Path]:

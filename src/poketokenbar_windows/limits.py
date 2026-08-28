@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import shutil
@@ -9,15 +10,22 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from .models import LimitWindow, ProviderLimits, RateLimitResetCredit
-from .windows import APP_NAME, hidden_subprocess_kwargs, local_appdata, resolve_gui_binary
+from .windows import (
+    APP_NAME,
+    claude_plan_usage_paths,
+    hidden_subprocess_kwargs,
+    local_appdata,
+    resolve_gui_binary,
+)
 
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+CLAUDE_LOCAL_USAGE_MAX_AGE = timedelta(hours=1)
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -88,10 +96,66 @@ def _read_claude_oauth() -> tuple[str, str | None, str | None] | None:
     return None
 
 
+def _read_claude_local_limits(now: datetime | None = None) -> ProviderLimits | None:
+    """Read the newest fresh usage sample written by Claude Desktop.
+
+    Microsoft Store builds keep current authentication inside their app
+    container, so the traditional Claude Code OAuth file can be unavailable or
+    expired even while Desktop is signed in. Its local plan history provides a
+    privacy-preserving fallback for the two standard utilization windows.
+    """
+    current = now or datetime.now().astimezone()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc).astimezone()
+
+    newest: tuple[datetime, dict[str, Any]] | None = None
+    for path in claude_plan_usage_paths():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict) or data.get("version") != 2:
+            continue
+        samples = data.get("samples")
+        if not isinstance(samples, list):
+            continue
+        for sample in samples:
+            if not isinstance(sample, dict) or not isinstance(sample.get("u"), dict):
+                continue
+            sampled_at = _parse_datetime(sample.get("t"))
+            if sampled_at is None:
+                continue
+            if newest is None or sampled_at > newest[0]:
+                newest = sampled_at, sample["u"]
+
+    if newest is None:
+        return None
+    sampled_at, usage = newest
+    age = current - sampled_at.astimezone(current.tzinfo)
+    if age < -timedelta(minutes=5) or age > CLAUDE_LOCAL_USAGE_MAX_AGE:
+        return None
+
+    windows: list[LimitWindow] = []
+    for key, label in (("fh", "5-hour"), ("sd", "Weekly")):
+        try:
+            used = float(usage[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if math.isfinite(used):
+            windows.append(LimitWindow(label=label, used_percent=used))
+    if not windows:
+        return None
+    return ProviderLimits(provider="claude", windows=windows)
+
+
+def _claude_fallback(error: str) -> ProviderLimits:
+    return _read_claude_local_limits() or ProviderLimits(provider="claude", error=error)
+
+
 def fetch_claude_limits(timeout: float = 12.0) -> ProviderLimits:
     credential = _read_claude_oauth()
     if credential is None:
-        return ProviderLimits(provider="claude", error="Claude OAuth credentials not found")
+        return _claude_fallback("Claude OAuth credentials not found")
     token, subscription_type, rate_limit_tier = credential
     request = urllib.request.Request(
         CLAUDE_USAGE_URL,
@@ -106,11 +170,11 @@ def fetch_claude_limits(timeout: float = 12.0) -> ProviderLimits:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.load(response)
     except urllib.error.HTTPError as exc:
-        return ProviderLimits(provider="claude", error=f"Claude limits HTTP {exc.code}")
+        return _claude_fallback(f"Claude limits HTTP {exc.code}")
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        return ProviderLimits(provider="claude", error=f"Claude limits: {exc}")
+        return _claude_fallback(f"Claude limits: {exc}")
     if not isinstance(data, dict):
-        return ProviderLimits(provider="claude", error="Claude limits returned an unexpected payload")
+        return _claude_fallback("Claude limits returned an unexpected payload")
 
     windows: list[LimitWindow] = []
     for key, label in (("five_hour", "5-hour"), ("seven_day", "Weekly")):
@@ -142,11 +206,12 @@ def fetch_claude_limits(timeout: float = 12.0) -> ProviderLimits:
         label = str(display or item.get("group") or kind or "Limit").replace("_", " ").title()
         windows.append(LimitWindow(label=label, used_percent=used, resets_at=_parse_datetime(item.get("resets_at"))))
 
-    return ProviderLimits(
+    result = ProviderLimits(
         provider="claude",
         plan=_plan_display(subscription_type, rate_limit_tier),
         windows=windows,
     )
+    return result if result.windows else (_read_claude_local_limits() or result)
 
 
 def _find_codex() -> str | None:
