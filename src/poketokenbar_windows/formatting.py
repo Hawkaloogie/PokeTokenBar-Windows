@@ -6,7 +6,6 @@ from typing import Literal
 
 from .models import ProviderLimits
 
-
 ResetUrgency = Literal["neutral", "warning", "critical"]
 
 

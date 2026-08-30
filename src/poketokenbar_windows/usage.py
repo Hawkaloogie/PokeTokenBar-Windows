@@ -2,22 +2,25 @@ from __future__ import annotations
 
 import glob
 import json
+import math
 import os
 import sqlite3
-from collections import defaultdict
-from dataclasses import replace
+from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any
 
 from .models import ProviderUsage, UsageEntry, UsageSnapshot
 from .pricing import cost_for
 from .windows import (
     claude_desktop_roots,
+)
+from .windows import (
     cursor_database_candidates as native_cursor_database_candidates,
+)
+from .windows import (
     kiro_database_candidates as native_kiro_database_candidates,
 )
-
 
 PROVIDER_LABELS = {
     "claude": "Claude Code",
@@ -83,7 +86,7 @@ def _float(value: Any) -> float | None:
         if value is None or isinstance(value, bool):
             return None
         out = float(value)
-        return out if out == out else None
+        return None if math.isnan(out) else out
     except (TypeError, ValueError, OverflowError):
         return None
 
@@ -732,7 +735,7 @@ def scan_all(now: datetime | None = None) -> tuple[UsageSnapshot, dict[str, str]
     for provider, scanner in SCANNERS.items():
         try:
             entries = scanner(month)
-        except Exception as exc:  # a broken local DB should not take down the tray
+        except Exception as exc:  # noqa: BLE001  # a broken local DB should not take down the tray
             errors[provider] = f"{type(exc).__name__}: {exc}"
             entries = []
         if provider == "cursor" and not entries:

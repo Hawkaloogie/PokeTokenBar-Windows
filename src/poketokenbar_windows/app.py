@@ -31,9 +31,15 @@ def _hide_console_window() -> None:
 def main() -> int:
     _configure_windows_identity()
     _hide_console_window()
-    from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtWidgets import QApplication
+
     from .ui import TrayController, application_icon
 
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     app = QApplication(sys.argv)
     icon = application_icon()
     app.setWindowIcon(icon)
@@ -43,10 +49,10 @@ def main() -> int:
     app.setQuitOnLastWindowClosed(False)
 
     controller = TrayController(app)
-    show_main = os.environ.get("PTB_SHOW_MAIN", "").strip().lower() in {"1", "true", "yes", "on"}
-    if show_main or not QSystemTrayIcon.isSystemTrayAvailable():
-        # Remote Desktop / restricted shells can temporarily hide the notification area.
-        controller.window.show()
+    # Show the main window on an interactive launch. The tray icon remains
+    # available after the window is closed, but users should not have to find
+    # the notification-area icon before they can use the app for the first time.
+    controller.show_window()
 
     app._poketokenbar_controller = controller  # keep QObject graph alive
     return app.exec()

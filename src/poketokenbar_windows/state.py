@@ -6,8 +6,6 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from .windows import state_dir
-
 from .pokemon import (
     EGG_HATCH_THRESHOLD,
     MINT_PRICE,
@@ -19,6 +17,7 @@ from .pokemon import (
     egg_price,
     phase_threshold,
 )
+from .windows import state_dir
 
 
 STATE_VERSION = 2

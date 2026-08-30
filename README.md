@@ -15,6 +15,9 @@ A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/P
 - Upstream balance values: 5M hatch threshold; 750M / 1.875B / 3B / 6B graduation totals by rarity
 - 25 natures, PokeAPI capture-rate rarity, shiny hatches, and Shiny Charm
 - Bag and token shop: Rare Candy, Mint, Shiny Charm, normal/Uncommon/Rare eggs
+- Separate Home, Collection, Bag, Shop, and Settings areas; paged Pokédex, Shiny sprite toggle, catch history, evolution line, and short in-app celebrations
+- Configurable light/dark/system theme, refresh interval, limit thresholds, used/remaining percentages, tray fields, notifications, Pokémon-name language, and save import/export
+- Official-limit progress bars with reset countdowns, simple depletion forecasts, stale/error states, and deduplicated warning/critical alerts
 - Rare Candy rewards when an official 5-hour/weekly limit reaches 100%, with upstream-compatible first-snapshot seeding
 - Install-time usage baseline: pre-install usage is never retroactively converted into growth or shop currency
 - Collection/catch history and persistent state under `%APPDATA%\PokeTokenBar-Windows`
@@ -63,7 +66,7 @@ The Windows port reads the same underlying local formats as upstream and uses na
 
 | Tool | Windows locations / behavior |
 |---|---|
-| Claude Code | `$env:CLAUDE_CONFIG_DIR\projects`, `%USERPROFILE%\.config\claude\projects`, `%USERPROFILE%\.claude\projects`; Claude Desktop session stores under AppData are also probed |
+| Claude Code | `$env:CLAUDE_CONFIG_DIR\projects`, `%USERPROFILE%\.config\claude\projects`, `%USERPROFILE%\.claude\projects`; classic and Microsoft Store Claude Desktop session stores under AppData are also probed |
 | Codex | `$env:CODEX_HOME\sessions` or `%USERPROFILE%\.codex\sessions`, plus `archived_sessions` |
 | Gemini CLI | `%USERPROFILE%\.gemini\tmp\**\chats\*.json(l)` |
 | OpenCode | `$env:OPENCODE_DATA_DIR` or `%USERPROFILE%\.local\share\opencode` (the Windows location documented by OpenCode) |
@@ -73,7 +76,7 @@ The Windows port reads the same underlying local formats as upstream and uses na
 | Copilot CLI | `$env:COPILOT_HOME\session-store.db` or `%USERPROFILE%\.copilot\session-store.db` |
 | Kiro CLI | `$env:KIRO_CLI_HOME\data.sqlite3`, plus Local/Roaming AppData and `%USERPROFILE%\.kiro` candidates |
 
-No model turn is started to collect usage. Claude limits make an authenticated GET to Anthropic's OAuth usage endpoint using Claude Code's existing local OAuth token. Codex limits query the local Codex app-server account snapshot.
+No model turn is started to collect usage. Claude limits make an authenticated GET to Anthropic's OAuth usage endpoint using Claude Code's existing local OAuth token. When current Microsoft Store builds keep authentication inside their app container, the fresh local `plan-usage-history.json` is used as a fallback. Codex limits query the local Codex app-server account snapshot.
 
 ### Overrides
 
@@ -105,9 +108,8 @@ This is a serious first Windows port, not a bit-for-bit rewrite of the SwiftUI a
 - Kiro's Windows database location is probed across likely AppData layouts because its local layout has changed between releases; `KIRO_CLI_HOME` is the authoritative override.
 - Codex fork/replay dedup is simplified versus upstream's deep parent-rollout reconciliation. Normal `token_count` snapshots are deduplicated, but pathological fork histories may differ slightly.
 - Provider incident banners and in-app self-updater are not included yet.
-- UI localization is not yet ported; Pokemon names can already be resolved through PokeAPI language data in the core.
+- Full UI translation is not yet ported; the configured language currently applies to Pokémon names.
 - Virtual-desktop behavior is intentionally scoped to the current Windows virtual desktop; all of its monitors are supported, including negative coordinates and mixed-DPI layouts.
-- The actual GUI/notification-area behavior must be validated on a Windows desktop; non-UI core and packaging checks can run cross-platform.
 
 ## Tests
 
