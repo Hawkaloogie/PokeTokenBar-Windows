@@ -50,6 +50,25 @@ from .floating_pet import (
 )
 from .limits import fetch_all_limits
 from .models import ProviderLimits, UsageSnapshot
+from .notifications import (
+    COMPANION_NOTIFICATIONS_KEY,
+    CRITICAL_MAX,
+    CRITICAL_MIN,
+    CRITICAL_THRESHOLD_KEY,
+    DEFAULT_COMPANION_NOTIFICATIONS,
+    DEFAULT_CRITICAL_THRESHOLD,
+    DEFAULT_LIMIT_NOTIFICATIONS,
+    DEFAULT_WARNING_THRESHOLD,
+    LIMIT_NOTIFICATIONS_KEY,
+    THRESHOLD_STEP,
+    WARNING_MAX,
+    WARNING_MIN,
+    WARNING_THRESHOLD_KEY,
+    companion_notification,
+    evaluate_limit_alerts,
+    normalize_critical_threshold,
+    normalize_warning_threshold,
+)
 from .pet_logic import PET_DEFAULT_SIZE, PET_MAX_SIZE, PET_MIN_SIZE, PET_SIZE_STEP, normalize_pet_size, settings_bool
 from .pokemon import EGG_HATCH_THRESHOLD, PokeAPIClient, egg_price, phase_threshold
 from .state import (
@@ -309,6 +328,10 @@ class MetricCard(QFrame):
 
 class MainWindow(QMainWindow):
     refresh_requested = Signal()
+    limit_notifications_changed = Signal(bool)
+    warning_threshold_changed = Signal(int)
+    critical_threshold_changed = Signal(int)
+    companion_notifications_changed = Signal(bool)
     floating_pet_enabled_changed = Signal(bool)
     floating_pet_size_changed = Signal(int)
     floating_pet_alerts_changed = Signal(bool)
@@ -329,7 +352,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._build_home(), "Home")
         tabs.addTab(self._build_collection(), "Collection")
         tabs.addTab(self._build_bag_shop(), "Bag & Shop")
-        tabs.addTab(self._build_settings(), "Settings")
+        tabs.addTab(self._wrap_scroll(self._build_settings()), "Settings")
         self.setCentralWidget(tabs)
 
     def showEvent(self, event) -> None:  # noqa: N802
@@ -489,6 +512,78 @@ class MainWindow(QMainWindow):
         self.autostart_check.toggled.connect(self._toggle_autostart)
         layout.addWidget(self.autostart_check)
 
+        notifications_heading = QLabel("Notifications")
+        notifications_font = notifications_heading.font()
+        notifications_font.setBold(True)
+        notifications_heading.setFont(notifications_font)
+        layout.addWidget(notifications_heading)
+
+        self.limit_notifications_check = QCheckBox("Limit alerts")
+        self.limit_notifications_check.setChecked(
+            settings_bool(
+                self.settings.value(LIMIT_NOTIFICATIONS_KEY, DEFAULT_LIMIT_NOTIFICATIONS),
+                DEFAULT_LIMIT_NOTIFICATIONS,
+            )
+        )
+        self.limit_notifications_check.toggled.connect(self._limit_notifications_toggled)
+        layout.addWidget(self.limit_notifications_check)
+
+        self.warning_threshold_row = QWidget()
+        warning_layout = QHBoxLayout(self.warning_threshold_row)
+        warning_layout.setContentsMargins(20, 0, 0, 0)
+        warning_layout.addWidget(QLabel("Warning"))
+        self.warning_threshold_slider = QSlider(Qt.Orientation.Horizontal)
+        self.warning_threshold_slider.setRange(WARNING_MIN, WARNING_MAX)
+        self.warning_threshold_slider.setSingleStep(THRESHOLD_STEP)
+        self.warning_threshold_slider.setPageStep(THRESHOLD_STEP)
+        warning_value = normalize_warning_threshold(
+            self.settings.value(WARNING_THRESHOLD_KEY, DEFAULT_WARNING_THRESHOLD)
+        )
+        self.warning_threshold_slider.setValue(warning_value)
+        self.warning_threshold_value = QLabel(f"{warning_value}%")
+        self.warning_threshold_value.setMinimumWidth(38)
+        self.warning_threshold_slider.valueChanged.connect(self._warning_threshold_value_changed)
+        warning_layout.addWidget(self.warning_threshold_slider, 1)
+        warning_layout.addWidget(self.warning_threshold_value)
+        layout.addWidget(self.warning_threshold_row)
+
+        self.critical_threshold_row = QWidget()
+        critical_layout = QHBoxLayout(self.critical_threshold_row)
+        critical_layout.setContentsMargins(20, 0, 0, 0)
+        critical_layout.addWidget(QLabel("Critical"))
+        self.critical_threshold_slider = QSlider(Qt.Orientation.Horizontal)
+        self.critical_threshold_slider.setRange(CRITICAL_MIN, CRITICAL_MAX)
+        self.critical_threshold_slider.setSingleStep(THRESHOLD_STEP)
+        self.critical_threshold_slider.setPageStep(THRESHOLD_STEP)
+        critical_value = normalize_critical_threshold(
+            self.settings.value(CRITICAL_THRESHOLD_KEY, DEFAULT_CRITICAL_THRESHOLD)
+        )
+        self.critical_threshold_slider.setValue(critical_value)
+        self.critical_threshold_value = QLabel(f"{critical_value}%")
+        self.critical_threshold_value.setMinimumWidth(38)
+        self.critical_threshold_slider.valueChanged.connect(self._critical_threshold_value_changed)
+        critical_layout.addWidget(self.critical_threshold_slider, 1)
+        critical_layout.addWidget(self.critical_threshold_value)
+        layout.addWidget(self.critical_threshold_row)
+
+        self.companion_notifications_check = QCheckBox(
+            "Companion events (hatch / evolve / graduate)"
+        )
+        self.companion_notifications_check.setChecked(
+            settings_bool(
+                self.settings.value(
+                    COMPANION_NOTIFICATIONS_KEY,
+                    DEFAULT_COMPANION_NOTIFICATIONS,
+                ),
+                DEFAULT_COMPANION_NOTIFICATIONS,
+            )
+        )
+        self.companion_notifications_check.toggled.connect(
+            self.companion_notifications_changed.emit
+        )
+        layout.addWidget(self.companion_notifications_check)
+        self._set_limit_threshold_rows_visible(self.limit_notifications_check.isChecked())
+
         pet_heading = QLabel("Floating desktop pet")
         pet_font = pet_heading.font()
         pet_font.setBold(True)
@@ -556,6 +651,32 @@ class MainWindow(QMainWindow):
             self.autostart_check.setChecked(not enabled)
             self.autostart_check.blockSignals(False)
             QMessageBox.warning(self, "Autostart", str(exc))
+
+    def _limit_notifications_toggled(self, enabled: bool) -> None:
+        self._set_limit_threshold_rows_visible(enabled)
+        self.limit_notifications_changed.emit(enabled)
+
+    def _set_limit_threshold_rows_visible(self, visible: bool) -> None:
+        self.warning_threshold_row.setVisible(visible)
+        self.critical_threshold_row.setVisible(visible)
+
+    def _warning_threshold_value_changed(self, value: int) -> None:
+        normalized = normalize_warning_threshold(value)
+        if normalized != value:
+            self.warning_threshold_slider.blockSignals(True)
+            self.warning_threshold_slider.setValue(normalized)
+            self.warning_threshold_slider.blockSignals(False)
+        self.warning_threshold_value.setText(f"{normalized}%")
+        self.warning_threshold_changed.emit(normalized)
+
+    def _critical_threshold_value_changed(self, value: int) -> None:
+        normalized = normalize_critical_threshold(value)
+        if normalized != value:
+            self.critical_threshold_slider.blockSignals(True)
+            self.critical_threshold_slider.setValue(normalized)
+            self.critical_threshold_slider.blockSignals(False)
+        self.critical_threshold_value.setText(f"{normalized}%")
+        self.critical_threshold_changed.emit(normalized)
 
     def _pet_enabled_toggled(self, enabled: bool) -> None:
         self._set_pet_controls_enabled(enabled)
@@ -882,9 +1003,31 @@ class TrayController(QObject):
         self.refresh_pending = False
         self.last_result: RefreshResult | None = None
         self.qa_capture_scheduled = False
+        self.limit_alert_tiers: dict[str, int] = {}
+        self.limit_notifications_enabled = settings_bool(
+            self.settings.value(LIMIT_NOTIFICATIONS_KEY, DEFAULT_LIMIT_NOTIFICATIONS),
+            DEFAULT_LIMIT_NOTIFICATIONS,
+        )
+        self.companion_notifications_enabled = settings_bool(
+            self.settings.value(
+                COMPANION_NOTIFICATIONS_KEY,
+                DEFAULT_COMPANION_NOTIFICATIONS,
+            ),
+            DEFAULT_COMPANION_NOTIFICATIONS,
+        )
+        self.warning_threshold = normalize_warning_threshold(
+            self.settings.value(WARNING_THRESHOLD_KEY, DEFAULT_WARNING_THRESHOLD)
+        )
+        self.critical_threshold = normalize_critical_threshold(
+            self.settings.value(CRITICAL_THRESHOLD_KEY, DEFAULT_CRITICAL_THRESHOLD)
+        )
 
         self.window = MainWindow(self.state, self.settings, self.api)
         self.window.refresh_requested.connect(self._refresh_and_reschedule)
+        self.window.limit_notifications_changed.connect(self._set_limit_notifications)
+        self.window.warning_threshold_changed.connect(self._set_warning_threshold)
+        self.window.critical_threshold_changed.connect(self._set_critical_threshold)
+        self.window.companion_notifications_changed.connect(self._set_companion_notifications)
         self._wire_shop_buttons()
 
         self.tray = QSystemTrayIcon(_pokeball_icon(), self)
@@ -904,7 +1047,13 @@ class TrayController(QObject):
         self.tray.activated.connect(self._tray_activated)
         self.tray.show()
 
-        self.floating_pet = FloatingPetController(self.app, self.settings, self.show_window)
+        self.floating_pet = FloatingPetController(
+            self.app,
+            self.settings,
+            self.show_window,
+            warning_percent=self.warning_threshold,
+            critical_percent=self.critical_threshold,
+        )
         self.window.floating_pet_enabled_changed.connect(self.floating_pet.set_enabled)
         self.window.floating_pet_size_changed.connect(self.floating_pet.set_size)
         self.window.floating_pet_alerts_changed.connect(self.floating_pet.set_alerts_enabled)
@@ -942,6 +1091,37 @@ class TrayController(QObject):
     def _reschedule(self) -> None:
         minutes = int(self.settings.value("refresh_minutes", 5))
         self.timer.start(max(1, minutes) * 60_000)
+
+    def _set_limit_notifications(self, enabled: bool) -> None:
+        self.limit_notifications_enabled = bool(enabled)
+        self.settings.setValue(LIMIT_NOTIFICATIONS_KEY, self.limit_notifications_enabled)
+        self.settings.sync()
+
+    def _set_companion_notifications(self, enabled: bool) -> None:
+        self.companion_notifications_enabled = bool(enabled)
+        self.settings.setValue(
+            COMPANION_NOTIFICATIONS_KEY,
+            self.companion_notifications_enabled,
+        )
+        self.settings.sync()
+
+    def _set_warning_threshold(self, value: int) -> None:
+        self.warning_threshold = normalize_warning_threshold(value)
+        self.settings.setValue(WARNING_THRESHOLD_KEY, self.warning_threshold)
+        self.settings.sync()
+        self.floating_pet.set_alert_thresholds(
+            self.warning_threshold,
+            self.critical_threshold,
+        )
+
+    def _set_critical_threshold(self, value: int) -> None:
+        self.critical_threshold = normalize_critical_threshold(value)
+        self.settings.setValue(CRITICAL_THRESHOLD_KEY, self.critical_threshold)
+        self.settings.sync()
+        self.floating_pet.set_alert_thresholds(
+            self.warning_threshold,
+            self.critical_threshold,
+        )
 
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
@@ -1019,20 +1199,39 @@ class TrayController(QObject):
         self.window.render(result)
         self.tray.setIcon(_pokeball_icon())
         self.tray.setToolTip(tray_tooltip(result))
+        limit_alerts, self.limit_alert_tiers = evaluate_limit_alerts(
+            result.limits,
+            self.limit_alert_tiers,
+            warning_percent=self.warning_threshold,
+            critical_percent=self.critical_threshold,
+        )
+        if self.limit_notifications_enabled:
+            for alert in limit_alerts:
+                provider = PROVIDER_LABELS.get(alert.provider, alert.provider.title())
+                title = "Limit imminent" if alert.severity == "critical" else "Limit warning"
+                icon = (
+                    QSystemTrayIcon.MessageIcon.Critical
+                    if alert.severity == "critical"
+                    else QSystemTrayIcon.MessageIcon.Warning
+                )
+                self.tray.showMessage(
+                    title,
+                    f"{provider} {alert.window_label} at {alert.used_percent:.0f}%",
+                    icon,
+                    6_000,
+                )
         self.floating_pet.update(result)
         self._schedule_qa_capture()
-        for event in result.events:
-            if event.startswith("hatched:"):
-                sprite_icon = _icon_from_sprite(result.sprite_path)
-                self.tray.showMessage("Pokemon hatched!", result.display_name, sprite_icon, 5000)
-            elif event.startswith("evolved:"):
-                self.tray.showMessage("Evolution!", result.display_name, QSystemTrayIcon.MessageIcon.Information, 5000)
-            elif event.startswith("graduated:"):
-                self.tray.showMessage("Pokemon graduated!", "A new egg is ready.", QSystemTrayIcon.MessageIcon.Information, 5000)
-            elif event.startswith("candy:"):
-                parts = event.split(":", 3)
-                count = parts[1] if len(parts) > 1 else "1"
-                self.tray.showMessage("Rare Candy earned!", f"You earned {count} Rare Candy.", QSystemTrayIcon.MessageIcon.Information, 5000)
+        if self.companion_notifications_enabled:
+            for event in result.events:
+                notification = companion_notification(event, result.display_name)
+                if notification is None:
+                    continue
+                if notification.use_sprite_icon:
+                    icon = _icon_from_sprite(result.sprite_path)
+                else:
+                    icon = QSystemTrayIcon.MessageIcon.Information
+                self.tray.showMessage(notification.title, notification.body, icon, 5_000)
         if self.refresh_pending:
             self.refresh_pending = False
             QTimer.singleShot(0, self.refresh)
@@ -1071,6 +1270,13 @@ class TrayController(QObject):
                 "main_size": [self.window.width(), self.window.height()],
                 "tray_visible": self.tray.isVisible(),
                 "tray_tooltip": self.tray.toolTip(),
+                "notifications": {
+                    "limit_alerts": self.limit_notifications_enabled,
+                    "warning_threshold": self.warning_threshold,
+                    "critical_threshold": self.critical_threshold,
+                    "companion_events": self.companion_notifications_enabled,
+                    "deduplicated_limit_windows": len(self.limit_alert_tiers),
+                },
                 "pet": self.floating_pet.qa_snapshot(),
             }
             tmp = target / "qa-report.tmp"

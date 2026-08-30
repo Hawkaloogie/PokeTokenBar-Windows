@@ -280,6 +280,9 @@ class FloatingPetController(QObject):
         app: QApplication,
         settings,
         on_open: Callable[[], None],
+        *,
+        warning_percent: float = 80.0,
+        critical_percent: float = 95.0,
     ):
         super().__init__()
         self.app = app
@@ -287,6 +290,8 @@ class FloatingPetController(QObject):
         self.on_open = on_open
         self.enabled = settings_bool(settings.value(PET_ENABLED_KEY, False), False)
         self.alerts_enabled = settings_bool(settings.value(PET_ALERTS_KEY, True), True)
+        self.warning_percent = float(warning_percent)
+        self.critical_percent = float(critical_percent)
         self.size = normalize_pet_size(settings.value(PET_SIZE_KEY, PET_DEFAULT_SIZE))
         self.result: Any | None = None
         self.alert_memory = load_alert_memory(settings.value(PET_ALERT_MEMORY_KEY, ""))
@@ -375,6 +380,10 @@ class FloatingPetController(QObject):
             self.bubble.hide()
         self.alerts_enabled_changed.emit(self.alerts_enabled)
 
+    def set_alert_thresholds(self, warning_percent: float, critical_percent: float) -> None:
+        self.warning_percent = float(warning_percent)
+        self.critical_percent = float(critical_percent)
+
     def _apply_visibility(self) -> None:
         if self.enabled:
             self.pet.show()
@@ -403,7 +412,12 @@ class FloatingPetController(QObject):
         self.pet.set_animation_running(True)
         self.pet.show()
         if evaluate_alerts and self.alerts_enabled:
-            alerts, self.alert_memory = evaluate_pet_alerts(self.result.limits, self.alert_memory)
+            alerts, self.alert_memory = evaluate_pet_alerts(
+                self.result.limits,
+                self.alert_memory,
+                warning_percent=self.warning_percent,
+                critical_percent=self.critical_percent,
+            )
             self.settings.setValue(PET_ALERT_MEMORY_KEY, dump_alert_memory(self.alert_memory))
             self.settings.sync()
             alert = choose_pet_alert(alerts)

@@ -9,7 +9,7 @@ A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/P
 - Windows 10/11 notification-area tray icon + Qt/PySide6 window, with current companion and stage progress in the tray tooltip
 - Opt-in interactive floating desktop pet: animated egg/Pokemon, 48–192 px sizing, drag-and-drop position persistence, hover usage/official-limit callout, click-to-open, context-menu hide, and transient limit/full-reset bubbles
 - Optional owned representative Pokemon for the desktop pet, independent of the actively progressing companion and preserving shiny variants
-- Windows balloon/toast-style tray notifications for hatch/evolution/candy events
+- Configurable Windows balloon/toast-style notifications: deduplicated official-limit warnings (80% warning and 95% critical by default) plus an independent toggle for hatch/evolution/graduation/Rare Candy events
 - Animated Gen-V Pokemon sprites with static fallback, fetched and cached at runtime
 - Egg -> hatch -> real evolution path -> graduation progression
 - Upstream balance values: 5M hatch threshold; 750M / 1.875B / 3B / 6B graduation totals by rarity
