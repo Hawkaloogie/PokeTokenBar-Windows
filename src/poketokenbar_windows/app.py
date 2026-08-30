@@ -30,9 +30,15 @@ def _hide_console_window() -> None:
 def main() -> int:
     _configure_windows_identity()
     _hide_console_window()
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QGuiApplication
     from PySide6.QtWidgets import QApplication
+
     from .ui import TrayController, application_icon
 
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
     app = QApplication(sys.argv)
     icon = application_icon()
     app.setWindowIcon(icon)

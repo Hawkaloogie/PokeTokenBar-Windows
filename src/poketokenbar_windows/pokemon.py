@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 EGG_HATCH_THRESHOLD = 5_000_000
 GRADUATION_TOTALS = {
     "common": 750_000_000,
@@ -101,7 +100,7 @@ class PokeAPIClient:
         with urllib.request.urlopen(request, timeout=self.timeout) as response:
             data = json.load(response)
         if not isinstance(data, dict):
-            raise ValueError("PokéAPI returned a non-object response")
+            raise ValueError("PokéAPI returned a non-object response")  # noqa: TRY004
         try:
             path.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
         except OSError:
@@ -119,7 +118,7 @@ class PokeAPIClient:
     def localized_name(self, species_id: int, language: str = "en") -> str:
         try:
             data = self.species(species_id)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return f"#{species_id}"
         names = data.get("names") if isinstance(data.get("names"), list) else []
         preferred = [language]
@@ -156,7 +155,7 @@ class PokeAPIClient:
                 continue
             try:
                 species = self.species(species_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 continue
             if species.get("evolves_from_species") is not None:
@@ -174,7 +173,7 @@ class PokeAPIClient:
                 continue
             try:
                 chain = self.evolution_chain(chain_ref["url"])
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 continue
             root = chain.get("chain")

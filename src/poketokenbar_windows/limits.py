@@ -23,7 +23,6 @@ from .windows import (
     resolve_gui_binary,
 )
 
-
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_LOCAL_USAGE_MAX_AGE = timedelta(hours=1)
 
@@ -352,10 +351,10 @@ def _codex_rpc_result(binary: str, timeout: float) -> dict[str, Any]:
                 continue
             error = obj.get("error")
             if isinstance(error, dict):
-                raise RuntimeError(str(error.get("message") or error))
+                raise RuntimeError(str(error.get("message") or error))  # noqa: TRY004
             result = obj.get("result")
             if not isinstance(result, dict):
-                raise RuntimeError("Codex app-server returned an unexpected rate-limit response")
+                raise RuntimeError("Codex app-server returned an unexpected rate-limit response")  # noqa: TRY004
             return result
 
         if proc.poll() is None:

@@ -11,7 +11,7 @@ class ModelRate:
     cache_read: float
 
     @classmethod
-    def per_million(cls, input_: float, output: float, cache_write: float, cache_read: float) -> "ModelRate":
+    def per_million(cls, input_: float, output: float, cache_write: float, cache_read: float) -> ModelRate:
         scale = 1_000_000.0
         return cls(input_ / scale, output / scale, cache_write / scale, cache_read / scale)
 
@@ -36,7 +36,7 @@ def rate_for(model: str) -> ModelRate:
     if model in TABLE:
         return TABLE[model]
     name = model.lower()
-    if name.startswith("grok") or name.startswith("antigravity/"):
+    if name.startswith(("grok", "antigravity/")):
         return ZERO
     if "opus" in name:
         return ModelRate.per_million(5, 25, 6.25, 0.5)

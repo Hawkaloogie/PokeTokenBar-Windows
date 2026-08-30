@@ -3,20 +3,21 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import unquote
 from urllib.request import Request
 
 from .models import UsageEntry
 from .windows import state_dir
-
 
 FILTERED_URL = "https://cursor.com/api/dashboard/get-filtered-usage-events"
 PAGE_SIZE = 100
@@ -47,7 +48,7 @@ def _float(value: Any) -> float | None:
         if value is None or isinstance(value, bool):
             return None
         out = float(value)
-        return out if out == out else None
+        return None if math.isnan(out) else out
     except (TypeError, ValueError, OverflowError):
         return None
 
@@ -107,7 +108,7 @@ def cache_account_identifier(token: str) -> str:
 
 
 def epoch_millisecond_string(moment: datetime) -> str:
-    return str(int(round(moment.timestamp() * 1000)))
+    return str(round(moment.timestamp() * 1000))
 
 
 def has_next_page(
@@ -450,7 +451,12 @@ def fetch_dashboard_entries(
 
 
 def scan_cursor_local(since: datetime) -> list[UsageEntry]:
-    from .usage import _dedup_keep_max, _json_dict, _open_sqlite_ro, cursor_database_candidates
+    from .usage import (
+        _dedup_keep_max,
+        _json_dict,
+        _open_sqlite_ro,
+        cursor_database_candidates,
+    )
 
     entries: list[UsageEntry] = []
     for db in cursor_database_candidates():

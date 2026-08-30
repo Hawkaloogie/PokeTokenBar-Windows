@@ -7,12 +7,16 @@ A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/P
 ## What works
 
 - Windows 10/11 notification-area tray icon + Qt/PySide6 window, with current companion and stage progress in the tray tooltip
+- Draggable, resizable desktop pet with persistent position, animated sprite, context menu, usage tooltip, limit bubbles, and optional collected-species representative
 - Windows balloon/toast-style tray notifications for hatch/evolution/candy events
 - Animated Gen-V Pokemon sprites with static fallback, fetched and cached at runtime
 - Egg -> hatch -> real evolution path -> graduation progression
 - Upstream balance values: 5M hatch threshold; 750M / 1.875B / 3B / 6B graduation totals by rarity
 - 25 natures, PokeAPI capture-rate rarity, shiny hatches, and Shiny Charm
 - Bag and token shop: Rare Candy, Mint, Shiny Charm, normal/Uncommon/Rare eggs
+- Separate Home, Collection, Bag, Shop, and Settings areas; paged Pokédex, Shiny sprite toggle, catch history, evolution line, and short in-app celebrations
+- Configurable light/dark/system theme, refresh interval, limit thresholds, used/remaining percentages, tray fields, notifications, Pokémon-name language, and save import/export
+- Official-limit progress bars with reset countdowns, simple depletion forecasts, stale/error states, and deduplicated warning/critical alerts
 - Rare Candy rewards when an official 5-hour/weekly limit reaches 100%, with upstream-compatible first-snapshot seeding
 - Install-time usage baseline: pre-install usage is never retroactively converted into growth or shop currency
 - Collection/catch history and persistent state under `%APPDATA%\PokeTokenBar-Windows`
@@ -98,12 +102,10 @@ Codex official limits use a local child process. The app does not upload your lo
 This is a serious first Windows port, not a bit-for-bit rewrite of the SwiftUI app. Current gaps:
 
 - Antigravity's protobuf-in-SQLite reader is not ported yet.
-- The floating desktop pet is not yet implemented; the companion lives in the tray and main window.
 - Kiro's Windows database location is probed across likely AppData layouts because its local layout has changed between releases; `KIRO_CLI_HOME` is the authoritative override.
 - Codex fork/replay dedup is simplified versus upstream's deep parent-rollout reconciliation. Normal `token_count` snapshots are deduplicated, but pathological fork histories may differ slightly.
 - Provider incident banners and in-app self-updater are not included yet.
-- UI localization is not yet ported; Pokemon names can already be resolved through PokeAPI language data in the core.
-- The actual GUI/notification-area behavior must be validated on a Windows desktop; non-UI core and packaging checks can run cross-platform.
+- Full UI translation is not yet ported; the configured language currently applies to Pokémon names.
 
 ## Tests
 

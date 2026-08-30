@@ -11,6 +11,13 @@ from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
 import poketokenbar_windows.limits as limits_module
+from poketokenbar_windows.cursor import (
+    cache_account_identifier,
+    has_next_page,
+    parse_cursor_bubble,
+    parse_usage_event,
+    workos_session_cookie,
+)
 from poketokenbar_windows.formatting import (
     compact_tokens,
     format_limit_datetime,
@@ -19,7 +26,11 @@ from poketokenbar_windows.formatting import (
     limit_reset_urgency,
     provider_limit_rows,
 )
-from poketokenbar_windows.models import LimitWindow, ProviderLimits, RateLimitResetCredit
+from poketokenbar_windows.models import (
+    LimitWindow,
+    ProviderLimits,
+    RateLimitResetCredit,
+)
 from poketokenbar_windows.pokemon import (
     EGG_HATCH_THRESHOLD,
     GRADUATION_TOTALS,
@@ -38,13 +49,6 @@ from poketokenbar_windows.state import (
     usage_delta,
 )
 from poketokenbar_windows.usage import parse_claude_object, parse_codex_object
-from poketokenbar_windows.cursor import (
-    cache_account_identifier,
-    has_next_page,
-    parse_cursor_bubble,
-    parse_usage_event,
-    workos_session_cookie,
-)
 from poketokenbar_windows.windows import (
     APP_NAME,
     REGISTRY_VALUE_NAME,
@@ -326,7 +330,10 @@ class WindowsIntegrationTests(unittest.TestCase):
             )
 
     def test_hidden_subprocess_flags(self):
-        from poketokenbar_windows.windows import hidden_subprocess_kwargs, resolve_gui_binary
+        from poketokenbar_windows.windows import (
+            hidden_subprocess_kwargs,
+            resolve_gui_binary,
+        )
 
         kwargs = hidden_subprocess_kwargs()
         self.assertIn("creationflags", kwargs)
@@ -501,7 +508,10 @@ class FormattingTests(unittest.TestCase):
         self.assertEqual(compact_tokens(1_000_000_000), "1B")
 
     def test_limit_dates_include_weekday_and_calendar_date(self):
-        self.assertEqual(format_limit_datetime(datetime(2026, 8, 26, 3, 37)), "Wed 26 Aug, 03:37")
+        self.assertEqual(
+            format_limit_datetime(datetime(2026, 8, 26, 3, 37, tzinfo=timezone.utc)),
+            "Wed 26 Aug, 03:37",
+        )
 
     def test_limit_reset_summary_is_optional_and_compact(self):
         self.assertEqual(limit_reset_summary(ProviderLimits(provider="codex")), "")
@@ -512,7 +522,7 @@ class FormattingTests(unittest.TestCase):
                 RateLimitResetCredit(
                     title="Full reset (Weekly + 5 hr)",
                     status="available",
-                    expires_at=datetime(2026, 9, 21, 1, 5),
+                    expires_at=datetime(2026, 9, 21, 1, 5, tzinfo=timezone.utc),
                 )
             ],
         )
