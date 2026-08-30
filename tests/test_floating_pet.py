@@ -110,6 +110,15 @@ class PetAlertTests(unittest.TestCase):
         alerts, _ = evaluate_pet_alerts(self._limits(99), memory, self.now)
         self.assertEqual(alerts, [])
 
+    def test_configurable_limit_thresholds_are_shared_with_pet_bubbles(self):
+        limits = self._limits(used=90.0)
+        alerts, _ = evaluate_pet_alerts(
+            limits,
+            warning_percent=90,
+            critical_percent=100,
+        )
+        self.assertEqual([alert.severity for alert in alerts], ["warning"])
+
     def test_new_time_window_rearms_but_small_reset_drift_does_not(self):
         first_reset = self.now + timedelta(hours=4)
         alerts, memory = evaluate_pet_alerts(self._limits(85, first_reset), now=self.now)

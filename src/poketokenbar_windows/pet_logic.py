@@ -213,6 +213,9 @@ def evaluate_pet_alerts(
     limits_by_provider: Mapping[str, ProviderLimits],
     memory: Mapping[str, AlertMemory] | None = None,
     now: datetime | None = None,
+    *,
+    warning_percent: float = PET_WARNING_PERCENT,
+    critical_percent: float = PET_CRITICAL_PERCENT,
 ) -> tuple[list[PetAlert], dict[str, AlertMemory]]:
     """Edge-trigger limit and reset alerts while preserving one state per time window."""
     updated = dict(memory or {})
@@ -223,7 +226,7 @@ def evaluate_pet_alerts(
             if "spend" in window.label.lower():
                 continue
             used = float(window.used_percent)
-            tier = 2 if used >= PET_CRITICAL_PERCENT else (1 if used >= PET_WARNING_PERCENT else 0)
+            tier = 2 if used >= critical_percent else (1 if used >= warning_percent else 0)
             marker = window.resets_at.timestamp() if window.resets_at is not None else None
             alert = _advance_alert(
                 updated,
