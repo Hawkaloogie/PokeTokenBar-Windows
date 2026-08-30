@@ -440,36 +440,67 @@ def buy_egg(state: GameState, tier: str | None) -> tuple[bool, str]:
 
 
 def apply_limit_rewards(state: GameState, limits: dict[str, Any]) -> list[str]:
-    """Grant Rare Candy once when an official limit window reaches 100%.
+    """Grant Rare Candy on a stable below-100 -> 100% limit transition.
 
-    The first successful limits snapshot is a seed only, matching upstream: an app
-    installed while an account is already at 100% must not receive retroactive candy.
+    Reset timestamps can drift by a second between otherwise identical Codex
+    snapshots, so they must never identify a reward window.  This mirrors the
+    upstream edge-triggered map: a capped window remains claimed until a later
+    refresh observes it below 100%, which rearms the next cap.
     """
+
+    def reward_key(provider: str, window: Any) -> str:
+        identity = getattr(window, "identifier", None) or str(window.label).lower()
+        return f"{provider}|{identity}"
+
+    def reward_eligible(window: Any) -> bool:
+        label = str(window.label).lower()
+        if "spend" in label:
+            return False
+        duration = getattr(window, "duration_minutes", None)
+        if duration is not None:
+            return True
+        return label in {"5-hour", "weekly"} or "luna reserve" in label
+
+    def previously_claimed(claims: set[str], provider: str, window: Any, key: str) -> bool:
+        if key in claims:
+            return True
+        # Migration from the old reset-timestamp identity.  Suppress at most the
+        # currently capped window; once it drops below 100% the legacy key is gone.
+        legacy_key = f"{provider}|{window.label}"
+        legacy_prefix = legacy_key + "|"
+        return legacy_key in claims or any(claim.startswith(legacy_prefix) for claim in claims)
+
     grants: list[str] = []
-    claimed = set(state.claimed_limit_windows)
+    previous_claims = set(state.claimed_limit_windows)
     at_cap: list[tuple[str, Any, str]] = []
     for provider, status in limits.items():
         for window in getattr(status, "windows", []):
-            if window.used_percent < 100:
+            if window.used_percent < 100 or not reward_eligible(window):
                 continue
-            reset_key = window.resets_at.isoformat() if window.resets_at else "no-reset"
-            key = f"{provider}|{window.label}|{reset_key}"
-            at_cap.append((provider, window, key))
+            at_cap.append((provider, window, reward_key(provider, window)))
 
     if not state.candy_feature_seeded:
-        claimed.update(key for _, _, key in at_cap)
         state.candy_feature_seeded = True
-        state.claimed_limit_windows = sorted(claimed)[-500:]
+        state.claimed_limit_windows = sorted(key for _, _, key in at_cap)
         return []
 
+    active_claims = {
+        key
+        for provider, window, key in at_cap
+        if previously_claimed(previous_claims, provider, window, key)
+    }
     for provider, window, key in at_cap:
-        if key in claimed:
+        if key in active_claims:
             continue
-        weekly = "week" in window.label.lower()
+        duration = getattr(window, "duration_minutes", None)
+        weekly = (
+            (duration is not None and duration > 1_440)
+            or "week" in window.label.lower()
+            or "luna reserve" in window.label.lower()
+        )
         count = 5 if weekly else 1
         state.inventory["rare_candy"] = state.inventory.get("rare_candy", 0) + count
-        claimed.add(key)
+        active_claims.add(key)
         grants.append(f"candy:{count}:{provider}:{window.label}")
-    # Bound persistence in case a long-running install accumulates years of windows.
-    state.claimed_limit_windows = sorted(claimed)[-500:]
+    state.claimed_limit_windows = sorted(key for _, _, key in at_cap)
     return grants

@@ -273,12 +273,39 @@ class StateTests(unittest.TestCase):
         self.assertEqual(apply_limit_rewards(state, first), [])
         self.assertEqual(state.inventory["rare_candy"], 0)
 
-        next_window = {"claude": ProviderLimits(provider="claude", windows=[
+        one_second_drift = {"claude": ProviderLimits(provider="claude", windows=[
+            LimitWindow("Weekly", 100.0, datetime(2026, 8, 24, 0, 0, 1, tzinfo=timezone.utc))
+        ])}
+        self.assertEqual(apply_limit_rewards(state, one_second_drift), [])
+        self.assertEqual(state.inventory["rare_candy"], 0)
+
+        rearmed = {"claude": ProviderLimits(provider="claude", windows=[
+            LimitWindow("Weekly", 99.0, datetime(2026, 8, 31, tzinfo=timezone.utc))
+        ])}
+        self.assertEqual(apply_limit_rewards(state, rearmed), [])
+
+        next_cap = {"claude": ProviderLimits(provider="claude", windows=[
             LimitWindow("Weekly", 100.0, datetime(2026, 8, 31, tzinfo=timezone.utc))
         ])}
-        self.assertEqual(len(apply_limit_rewards(state, next_window)), 1)
+        self.assertEqual(len(apply_limit_rewards(state, next_cap)), 1)
         self.assertEqual(state.inventory["rare_candy"], 5)
-        self.assertEqual(apply_limit_rewards(state, next_window), [])
+        self.assertEqual(apply_limit_rewards(state, next_cap), [])
+        self.assertEqual(state.inventory["rare_candy"], 5)
+
+    def test_luna_reserve_uses_its_weekly_duration_for_candy(self):
+        state = GameState(candy_feature_seeded=True)
+        reserve = LimitWindow(
+            "Luna Reserve",
+            100.0,
+            datetime(2026, 9, 7, tzinfo=timezone.utc),
+            duration_minutes=10_080,
+            identifier="base_model_inference.primary",
+        )
+        grants = apply_limit_rewards(
+            state,
+            {"codex": ProviderLimits(provider="codex", windows=[reserve])},
+        )
+        self.assertEqual(grants, ["candy:5:codex:Luna Reserve"])
         self.assertEqual(state.inventory["rare_candy"], 5)
 
     def test_fresh_egg_discards_active_ungraduated_catch(self):
@@ -490,8 +517,13 @@ class CodexLimitsTests(unittest.TestCase):
 
         self.assertIsNone(result.error)
         self.assertEqual(result.plan, "Plus")
-        self.assertEqual([window.label for window in result.windows], ["5-hour", "Weekly"])
-        self.assertEqual([window.remaining_percent for window in result.windows], [75, 60])
+        self.assertEqual(
+            [window.label for window in result.windows],
+            ["5-hour", "Weekly", "Luna Reserve"],
+        )
+        self.assertEqual([window.remaining_percent for window in result.windows], [75, 60, 100])
+        self.assertEqual(result.windows[2].duration_minutes, 10_080)
+        self.assertEqual(result.windows[2].identifier, "base_model_inference.primary")
         self.assertEqual(result.reset_credits_available, 1)
         self.assertEqual(len(result.reset_credits), 1)
         self.assertEqual(result.reset_credits[0].title, "Full reset (Weekly + 5 hr)")
@@ -539,6 +571,7 @@ class FormattingTests(unittest.TestCase):
             windows=[
                 LimitWindow("5-hour", 10, now + timedelta(hours=6)),
                 LimitWindow("Weekly", 14, now + timedelta(days=6)),
+                LimitWindow("Luna Reserve", 5, now + timedelta(days=3)),
             ],
             reset_credits_available=1,
             reset_credits=[
@@ -552,8 +585,9 @@ class FormattingTests(unittest.TestCase):
         rows = provider_limit_rows("Codex", limits, now)
         self.assertIn("5-hour", rows[0].text)
         self.assertIn("Weekly:", rows[1].text)
-        self.assertTrue(rows[2].text.startswith("[⚠ Codex · Full reset available"))
-        self.assertEqual(rows[2].urgency, "warning")
+        self.assertIn("Luna Reserve", rows[2].text)
+        self.assertTrue(rows[3].text.startswith("[⚠ Codex · Full reset available"))
+        self.assertEqual(rows[3].urgency, "warning")
 
     def test_reset_is_amber_under_one_week_even_after_weekly(self):
         now = datetime(2026, 8, 26, 8, 0, tzinfo=timezone.utc)

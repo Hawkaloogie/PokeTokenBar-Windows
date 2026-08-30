@@ -9,6 +9,10 @@ This Windows port is based on `chattymin/PokeTokenBar` and was initially ported 
 
 The implementation reuses the portable Python core developed for the Linux port, while preserving the upstream game-balance constants and local usage-file semantics. Platform integration is Windows-native: Qt/PySide6 notification-area UI, Roaming/Local AppData storage, HKCU Run startup, and Windows provider paths.
 
+## Latest behavior comparison
+
+The Luna Reserve/UI refresh work was compared on 2026-08-30 against upstream `main` at `1ff36e1e8372d85131d67ac5df61248995743ac5` (after tag `v2.5.2`). Relevant parity decisions carried over here are: render every visible Codex time bucket, classify candy rewards by the bucket duration, identify rewards with stable bucket keys rather than reset timestamps, refresh official limits on every automatic poll, and trigger a full refresh after using Rare Candy.
+
 ## Syncing future upstream changes
 
 When upstream changes provider formats or game constants, compare these areas first:

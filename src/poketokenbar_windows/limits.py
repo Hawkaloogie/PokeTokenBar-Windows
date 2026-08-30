@@ -365,7 +365,7 @@ def _codex_rpc_result(binary: str, timeout: float) -> dict[str, Any]:
         _stop_codex_process(proc)
 
 
-def _codex_window(raw: Any, label: str) -> LimitWindow | None:
+def _codex_window(raw: Any, label: str, *, identifier: str | None = None) -> LimitWindow | None:
     if not isinstance(raw, dict):
         return None
     used = raw.get("usedPercent")
@@ -375,13 +375,23 @@ def _codex_window(raw: Any, label: str) -> LimitWindow | None:
         percent = float(used)
     except (TypeError, ValueError):
         return None
-    duration = raw.get("windowDurationMins") or raw.get("window_duration_mins")
+    duration_raw = raw.get("windowDurationMins") or raw.get("window_duration_mins")
+    try:
+        duration = int(duration_raw) if duration_raw is not None else None
+    except (TypeError, ValueError):
+        duration = None
     if duration == 300:
         label = "5-hour"
     elif duration == 10080:
         label = "Weekly"
     resets = raw.get("resetsAt") if raw.get("resetsAt") is not None else raw.get("resets_at")
-    return LimitWindow(label=label, used_percent=percent, resets_at=_parse_datetime(resets))
+    return LimitWindow(
+        label=label,
+        used_percent=percent,
+        resets_at=_parse_datetime(resets),
+        duration_minutes=duration,
+        identifier=identifier,
+    )
 
 
 def _codex_reset_credits(payload: dict[str, Any]) -> tuple[int, list[RateLimitResetCredit]]:
@@ -423,22 +433,51 @@ def _codex_reset_credits(payload: dict[str, Any]) -> tuple[int, list[RateLimitRe
 
 
 def _codex_rate_limit_snapshots(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return only the public Codex bucket, excluding internal metering buckets."""
+    """Return visible Codex buckets with the headline bucket first.
+
+    Codex now exposes the Luna Reserve allowance as the
+    ``base_model_inference``/``gpt-reserve`` bucket.  The upstream app shows all
+    buckets that contain an actual time or spend window, so keep the same rule
+    instead of discarding every non-``codex`` entry.
+    """
     by_id = payload.get("rateLimitsByLimitId")
     if by_id is None:
         by_id = payload.get("rate_limits_by_limit_id")
     if isinstance(by_id, dict):
-        exact = by_id.get("codex")
-        if isinstance(exact, dict):
-            return [exact]
-        for item in by_id.values():
+        headline = by_id.get("codex")
+        if not isinstance(headline, dict):
+            headline = None
+        if headline is None:
+            for item in by_id.values():
+                if not isinstance(item, dict):
+                    continue
+                limit_id = item.get("limitId")
+                if limit_id is None:
+                    limit_id = item.get("limit_id")
+                if limit_id == "codex":
+                    headline = item
+                    break
+
+        snapshots = [headline] if headline is not None else []
+        headline_id = None
+        if headline is not None:
+            headline_id = headline.get("limitId") or headline.get("limit_id") or "codex"
+        for key, item in sorted(by_id.items(), key=lambda pair: str(pair[0])):
             if not isinstance(item, dict):
                 continue
             limit_id = item.get("limitId")
             if limit_id is None:
                 limit_id = item.get("limit_id")
-            if limit_id == "codex":
-                return [item]
+            resolved_id = limit_id or str(key)
+            if item is headline or resolved_id == headline_id:
+                continue
+            if any(
+                isinstance(item.get(field), dict)
+                for field in ("primary", "secondary", "individualLimit", "individual_limit")
+            ):
+                snapshots.append(item)
+        if snapshots:
+            return snapshots
 
     legacy = payload.get("rateLimits")
     if legacy is None:
@@ -448,6 +487,21 @@ def _codex_rate_limit_snapshots(payload: dict[str, Any]) -> list[dict[str, Any]]
     if any(key in payload for key in ("primary", "secondary", "individualLimit", "individual_limit")):
         return [payload]
     return []
+
+
+def _codex_bucket_display_name(snapshot: dict[str, Any]) -> str:
+    limit_id = str(snapshot.get("limitId") or snapshot.get("limit_id") or "").strip()
+    limit_name = str(snapshot.get("limitName") or snapshot.get("limit_name") or "").strip()
+    normalized_id = limit_id.lower().replace("-", "_")
+    normalized_name = limit_name.lower().replace("_", "-")
+    if normalized_id == "base_model_inference" or normalized_name in {
+        "gpt-reserve",
+        "luna-reserve",
+        "luna reserve",
+    }:
+        return "Luna Reserve"
+    raw = limit_name or limit_id or "Codex limit"
+    return raw.replace("_", " ").replace("-", " ").strip().title()
 
 
 def fetch_codex_limits(timeout: float = 20.0) -> ProviderLimits:
@@ -465,23 +519,50 @@ def fetch_codex_limits(timeout: float = 20.0) -> ProviderLimits:
     windows: list[LimitWindow] = []
     plan: str | None = None
     for index, snapshot in enumerate(snapshots):
-        name = str(snapshot.get("limitName") or snapshot.get("limitId") or ("Codex" if index == 0 else "Codex limit"))
+        limit_id = str(
+            snapshot.get("limitId")
+            or snapshot.get("limit_id")
+            or ("codex" if index == 0 else f"codex-{index}")
+        )
+        name = _codex_bucket_display_name(snapshot)
         plan = plan or snapshot.get("planType")
-        primary = _codex_window(snapshot.get("primary"), f"{name} primary")
-        secondary = _codex_window(snapshot.get("secondary"), f"{name} secondary")
-        if primary:
-            windows.append(primary)
-        if secondary:
-            windows.append(secondary)
+        parsed_windows = [
+            window
+            for window in (
+                _codex_window(
+                    snapshot.get("primary"),
+                    f"{name} primary",
+                    identifier=f"{limit_id}.primary",
+                ),
+                _codex_window(
+                    snapshot.get("secondary"),
+                    f"{name} secondary",
+                    identifier=f"{limit_id}.secondary",
+                ),
+            )
+            if window is not None
+        ]
+        if limit_id != "codex":
+            for window in parsed_windows:
+                duration_label = window.label
+                window.label = name if len(parsed_windows) == 1 else f"{name} · {duration_label}"
+        windows.extend(parsed_windows)
         individual = snapshot.get("individualLimit") or snapshot.get("individual_limit")
         if isinstance(individual, dict):
-            remaining = individual.get("remainingPercent") or individual.get("remaining_percent")
+            remaining = individual.get("remainingPercent")
+            if remaining is None:
+                remaining = individual.get("remaining_percent")
             try:
                 used = max(0.0, min(100.0, 100.0 - float(remaining)))
             except (TypeError, ValueError):
                 used = None
             if used is not None:
-                windows.append(LimitWindow(label=f"{name} spend", used_percent=used, resets_at=_parse_datetime(individual.get("resetsAt") or individual.get("resets_at"))))
+                windows.append(LimitWindow(
+                    label=f"{name} spend",
+                    used_percent=used,
+                    resets_at=_parse_datetime(individual.get("resetsAt") or individual.get("resets_at")),
+                    identifier=f"{limit_id}.individual",
+                ))
 
     reset_credits_available, reset_credits = _codex_reset_credits(payload)
     return ProviderLimits(

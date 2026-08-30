@@ -1,177 +1,196 @@
-# Roadmap de UI/UX
+# Folla de ruta de UI/UX
 
-Este roadmap prioriza las mejoras que hacen PokeTokenBar para Windows más agradable, sencillo, bonito y funcional. No pretende reproducir toda la infraestructura interna del proyecto original de macOS.
+Esta folla de ruta prioriza as melloras que fan PokeTokenBar para Windows máis agradable, sinxelo, atractivo e funcional. Non pretende reproducir toda a infraestrutura interna do proxecto orixinal para macOS.
+
+## Obxectivos principais e continuos
+
+### Modernizar a interface
+
+Evolucionar a capa visual para conseguir unha interface máis moderna, coidada e próxima á experiencia do proxecto upstream. Antes dunha migración ampla, avaliarase mediante prototipos se convén modernizar a implementación actual con Qt Widgets/PySide6, pasar a Qt Quick/QML ou empregar outra alternativa compatible con Windows.
+
+Calquera opción deberá conservar a integración coa bandexa do sistema, a mascota flotante, o empaquetado como aplicación independente, a accesibilidade e o comportamento correcto con distintos escalados DPI, temas e configuracións de monitores.
+
+### Incorporar melloras do upstream
+
+Revisar periodicamente o repositorio upstream e incorporar funcionalidades e melloras que aínda non estean presentes nesta versión, priorizando as máis útiles para as persoas usuarias de Windows e as que ofrezan unha boa relación entre valor, facilidade de adaptación e risco.
+
+Cada revisión debe quedar reflectida en `UPSTREAM.md`, indicando o commit comparado, as decisións de paridade e as diferenzas intencionadas.
 
 ## Criterios de alcance
 
-Se priorizan cambios con un efecto visible en la experiencia del usuario:
+Priorízanse os cambios cun efecto visible na experiencia de uso:
 
-- Claridad de la información.
-- Facilidad de navegación.
-- Calidad visual y consistencia.
-- Feedback inmediato ante acciones.
+- Claridade da información.
+- Facilidade de navegación.
+- Calidade visual e consistencia.
+- Resposta inmediata ás accións.
 - Personalización útil.
-- Mejor integración con el escritorio de Windows.
+- Mellor integración co escritorio de Windows.
 
-Quedan fuera, salvo que resuelvan un problema visible en Windows:
+Quedan fóra, salvo que resolvan un problema visible en Windows:
 
-- Crash reporters avanzados.
-- Rotación y migración histórica de logs.
-- Keychain y mecanismos exclusivos de macOS.
-- Homebrew, LaunchAgent y otros componentes de distribución de macOS.
-- Arneses internos sin impacto directo en la experiencia.
-- Paridad completa con todos los proveedores del upstream.
+- Informes avanzados de fallos.
+- Rotación e migración histórica de rexistros.
+- Keychain e mecanismos exclusivos de macOS.
+- Homebrew, LaunchAgent e outros compoñentes de distribución de macOS.
+- Infraestrutura interna sen impacto directo na experiencia.
+- Paridade completa e indiscriminada con todos os provedores do upstream.
 
-## Prioridad alta: experiencia principal
+## Prioridade alta: experiencia principal
 
-### Pet flotante de escritorio
+### Mascota flotante do escritorio
 
-- [x] Mostrar el compañero fuera de la bandeja del sistema.
-- [x] Permitir arrastrarlo y recordar su posición.
-- [x] Permitir configurar su tamaño.
-- [x] Abrir la ventana principal al hacer clic.
-- [x] Mostrar el consumo al pasar el cursor.
-- [x] Superponer al pasar el cursor el porcentaje hasta eclosión, evolución o graduación.
-- [x] Ofrecer un menú contextual sencillo.
+- [x] Mostrar o compañeiro fóra da bandexa do sistema.
+- [x] Permitir arrastralo e lembrar a súa posición.
+- [x] Permitir configurar o seu tamaño.
+- [x] Abrir a xanela principal ao facer clic.
+- [x] Mostrar o consumo ao pasar o cursor.
+- [x] Superpoñer ao pasar o cursor a porcentaxe ata a eclosión, evolución ou graduación.
+- [x] Ofrecer un menú contextual sinxelo.
+- [x] Permitir volver mostralo directamente desde o menú contextual da bandexa.
 - [x] Mostrar alertas de límites mediante bocadillos.
-- [x] Mantenerlo dentro de una pantalla válida al cambiar monitores o resolución.
+- [x] Mantelo dentro dunha pantalla válida ao cambiar monitores ou resolución.
 
-### Sprites y animaciones
+### Sprites e animacións
 
-- [x] Animar el Pokémon actual con sprites Gen-V.
-- [x] Animar el huevo mientras espera la eclosión.
-- [x] Mantener un fallback estático cuando no exista animación.
-- [x] Usar escalado pixel-perfect sin suavizado borroso.
-- [x] Precargar sprites para evitar saltos o imágenes tardías.
-- [x] Reducir o detener animaciones cuando no sean visibles.
+- [x] Animar o Pokémon actual con sprites da quinta xeración.
+- [x] Animar o ovo mentres agarda a eclosión.
+- [x] Manter unha alternativa estática cando non exista animación.
+- [x] Usar escalado exacto por píxel, sen suavizado borroso.
+- [x] Precargar os sprites para evitar saltos ou imaxes tardías.
+- [x] Reducir ou deter as animacións cando non sexan visibles.
 
 ### Pantalla Home
 
-- [x] Dar protagonismo visual al Pokémon actual.
-- [x] Mostrar claramente el progreso del huevo o estadio actual.
-- [x] Mostrar evolución actual y siguiente.
-- [x] Mostrar rareza, naturaleza y condición Shiny.
-- [x] Crear un resumen compacto de consumo y límites.
-- [x] Evitar grandes zonas vacías.
-- [x] Adaptar correctamente nombres y cifras largas.
+- [x] Dar protagonismo visual ao Pokémon actual.
+- [x] Mostrar claramente o progreso do ovo ou estadio actual.
+- [x] Mostrar a evolución actual e a seguinte.
+- [x] Mostrar rareza, natureza e condición Shiny.
+- [x] Crear un resumo compacto de consumo e límites.
+- [x] Evitar grandes zonas baleiras.
+- [x] Adaptar correctamente nomes e cifras longas.
+- [x] Axustar dinamicamente a altura dos provedores para priorizar os límites oficiais.
+- [x] Manter a porcentaxe de progreso lexible fóra do recheo da barra.
 
-### Celebraciones y feedback
+### Celebracións e resposta ás accións
 
-- [x] Añadir celebración de eclosión.
-- [x] Añadir celebración de evolución.
-- [x] Añadir celebración de graduación.
-- [x] Añadir celebración especial para Shiny.
-- [x] Mostrar feedback inmediato al usar Rare Candy.
-- [x] Mostrar la nueva naturaleza al usar Mint.
-- [x] Mantener las animaciones breves y no intrusivas.
+- [x] Engadir unha celebración de eclosión.
+- [x] Engadir unha celebración de evolución.
+- [x] Engadir unha celebración de graduación.
+- [x] Engadir unha celebración especial para Shiny.
+- [x] Mostrar unha resposta inmediata ao usar Rare Candy.
+- [x] Mostrar a nova natureza ao usar Mint.
+- [x] Manter as animacións breves e non intrusivas.
 
 ### Pokémon representante
 
-- [x] Permitir elegir cualquier especie poseída como representante.
-- [x] Mostrar el representante en la bandeja y el pet flotante.
-- [x] Mantener su selección independiente del compañero que se está criando.
-- [x] Permitir volver al modo «seguir al compañero actual».
+- [x] Permitir escoller como representante calquera especie posuída.
+- [x] Mostrar o representante na bandexa e na mascota flotante.
+- [x] Manter a súa selección independente do compañeiro que se está criando.
+- [x] Permitir volver ao modo «seguir o compañeiro actual».
 
-## Colección y progresión
+## Colección e progresión
 
 ### Pokédex
 
-- [x] Presentar las especies en una cuadrícula ordenada por número.
-- [x] Añadir paginación o navegación compacta.
-- [x] Diferenciar visualmente especies normales y Shiny.
-- [x] Permitir alternar el sprite normal/Shiny de una especie poseída.
-- [x] Mostrar contadores totales y por rareza.
-- [x] Diseñar estados vacíos cuidados.
+- [x] Presentar as especies nunha grade ordenada por número.
+- [x] Engadir paxinación ou navegación compacta.
+- [x] Diferenciar visualmente especies normais e Shiny.
+- [x] Permitir alternar o sprite normal/Shiny dunha especie posuída.
+- [x] Mostrar contadores totais e por rareza.
+- [x] Deseñar coidadosamente os estados baleiros.
 
-### Registro de capturas
+### Rexistro de capturas
 
-- [x] Separar el registro individual del Pokédex consolidado.
-- [x] Ordenar capturas de más reciente a más antigua.
-- [x] Mostrar línea evolutiva, rareza, naturaleza y fecha.
-- [x] Identificar claramente capturas Shiny.
+- [x] Separar o rexistro individual da Pokédex consolidada.
+- [x] Ordenar as capturas da máis recente á máis antiga.
+- [x] Mostrar liña evolutiva, rareza, natureza e data.
+- [x] Identificar claramente as capturas Shiny.
 
-### Línea evolutiva visual
+### Liña evolutiva visual
 
-- [x] Diferenciar formas obtenidas, actual y futuras.
-- [x] Representar ramas evolutivas sin saturar la pantalla.
-- [x] Mostrar estados desconocidos con un tratamiento visual coherente.
+- [x] Diferenciar formas obtidas, actual e futuras.
+- [x] Representar ramas evolutivas sen saturar a pantalla.
+- [x] Mostrar estados descoñecidos cun tratamento visual coherente.
 
-## Navegación y claridad
+## Navegación e claridade
 
-- [x] Mantener cuatro áreas principales: Home, Collection, Bag y Shop.
-- [x] Usar pestañas por proveedor solo cuando haya varios detectados.
-- [x] Mantener el resumen combinado fácilmente accesible.
-- [x] Añadir estados vacíos claros en colección, mochila y proveedores.
-- [x] Diferenciar visualmente «actualizando», «actualizado», «obsoleto» y «error».
-- [x] Evitar mostrar excepciones o mensajes técnicos crudos al usuario.
-- [x] Hacer predecible el cierre y la reapertura desde la bandeja.
-- [x] Añadir tooltips a las acciones poco evidentes.
+- [x] Manter cinco áreas principais: Home, Collection, Bag, Shop e Settings.
+- [x] Usar pestanas por provedor só cando haxa varios detectados.
+- [x] Manter o resumo combinado facilmente accesible.
+- [x] Engadir estados baleiros claros en colección, mochila e provedores.
+- [x] Diferenciar visualmente «actualizando», «actualizado», «obsoleto» e «erro».
+- [x] Evitar mostrar excepcións ou mensaxes técnicas en bruto á persoa usuaria.
+- [x] Facer predicible o peche e a reapertura desde a bandexa.
+- [x] Engadir textos de axuda ás accións pouco evidentes.
 
-## Bandeja del sistema
+## Bandexa do sistema
 
-- [x] Ofrecer modo solo personaje.
-- [x] Permitir mostrar u ocultar tokens de hoy.
-- [x] Permitir mostrar u ocultar coste.
-- [x] Permitir mostrar u ocultar porcentaje de límite.
-- [x] Mantener un tooltip compacto con el estado esencial.
-- [x] Garantizar buena legibilidad con escalado DPI y temas claro/oscuro.
+- [x] Ofrecer un modo só personaxe.
+- [x] Permitir mostrar ou ocultar os tokens de hoxe.
+- [x] Permitir mostrar ou ocultar o custo.
+- [x] Permitir mostrar ou ocultar a porcentaxe do límite.
+- [x] Manter un texto de axuda compacto co estado esencial.
+- [x] Garantir boa lexibilidade con escalado DPI e temas claro/escuro.
 
-## Límites y consumo
+## Límites e consumo
 
-- [x] Mostrar límites mediante barras de progreso claras.
-- [x] Mostrar cuenta atrás hasta el reinicio cuando esté disponible.
-- [x] Permitir alternar porcentaje usado y restante.
-- [x] Aplicar colores coherentes para estado normal, advertencia y crítico.
-- [x] Permitir configurar los umbrales de advertencia y crítico.
-- [x] Evitar notificaciones repetidas mientras se mantiene el mismo estado.
-- [x] Añadir una previsión sencilla de agotamiento antes del reinicio.
-- [x] Señalar datos obsoletos sin confundirlos con un fallo de la aplicación.
+- [x] Mostrar os límites mediante barras de progreso claras.
+- [x] Mostrar a conta atrás ata o reinicio cando estea dispoñible.
+- [x] Permitir alternar entre porcentaxe usada e restante.
+- [x] Aplicar cores coherentes para estados normal, de advertencia e crítico.
+- [x] Permitir configurar os limiares de advertencia e crítico.
+- [x] Evitar notificacións repetidas mentres se manteña o mesmo estado.
+- [x] Engadir unha previsión sinxela de esgotamento antes do reinicio.
+- [x] Sinalar datos obsoletos sen confundilos cun fallo da aplicación.
+- [x] Mostrar Luna Reserve debaixo dos límites principais de Codex e antes dos créditos de reinicio.
+- [x] Evitar Rare Candy duplicados cando a marca temporal do reinicio varíe uns segundos.
 
-## Tienda y mochila
+## Tenda e mochila
 
-- [x] Diseñar tarjetas visuales para objetos y huevos.
-- [x] Mostrar icono, nombre, efecto y precio de forma inmediata.
-- [x] Mostrar saldo disponible de manera consistente.
-- [x] Desactivar acciones no disponibles explicando el motivo.
-- [x] Solicitar confirmación contextual antes de comprar o usar objetos.
-- [x] Advertir al reemplazar un Pokémon activo.
-- [x] Mostrar una advertencia especial antes de descartar un Shiny.
-- [x] Diferenciar visualmente huevos Normal, Uncommon y Rare.
-- [x] Mostrar feedback visual después de cada compra o uso.
+- [x] Deseñar tarxetas visuais para obxectos e ovos.
+- [x] Mostrar icona, nome, efecto e prezo de forma inmediata.
+- [x] Mostrar o saldo dispoñible de maneira consistente.
+- [x] Desactivar as accións non dispoñibles explicando o motivo.
+- [x] Solicitar confirmación contextual antes de mercar ou usar obxectos.
+- [x] Advertir ao substituír un Pokémon activo.
+- [x] Mostrar unha advertencia especial antes de descartar un Shiny.
+- [x] Diferenciar visualmente ovos Normal, Uncommon e Rare.
+- [x] Mostrar unha resposta visual despois de cada compra ou uso.
 
-## Ajustes
+## Axustes
 
-- [x] Agrupar opciones en secciones fáciles de recorrer.
-- [x] Mantener las opciones técnicas dentro de una sección avanzada plegada.
-- [x] Permitir configurar idioma.
-- [x] Permitir configurar intervalo de actualización.
-- [x] Permitir configurar inicio automático.
-- [x] Permitir elegir los elementos visibles en la bandeja.
-- [x] Permitir configurar el pet flotante y su tamaño.
-- [x] Permitir activar por separado notificaciones de límites y eventos.
-- [x] Permitir elegir porcentaje usado o restante.
-- [x] Añadir adaptación consistente a temas claro y oscuro.
-- [x] Añadir importación y exportación de partida mediante selectores de archivo.
+- [x] Agrupar as opcións en seccións fáciles de percorrer.
+- [x] Manter as opcións técnicas dentro dunha sección avanzada pregable.
+- [x] Permitir configurar o idioma dos nomes dos Pokémon.
+- [x] Permitir configurar o intervalo de actualización.
+- [x] Permitir configurar o inicio automático.
+- [x] Permitir escoller os elementos visibles na bandexa.
+- [x] Permitir configurar a mascota flotante e o seu tamaño.
+- [x] Permitir activar por separado as notificacións de límites e eventos.
+- [x] Permitir escoller entre porcentaxe usada ou restante.
+- [x] Engadir unha adaptación consistente aos temas claro e escuro.
+- [x] Engadir importación e exportación da partida mediante selectores de ficheiro.
 
 ## Pulido transversal
 
-- [x] Definir una jerarquía tipográfica consistente.
-- [x] Unificar iconos, márgenes, radios y espaciado.
-- [x] Mejorar el comportamiento con escalado DPI.
-- [x] Evitar parpadeos y cambios bruscos durante las actualizaciones.
-- [x] Diseñar estados de carga, error y desconexión.
-- [x] Asegurar navegación por teclado y foco visible.
-- [x] Revisar contraste y legibilidad.
-- [x] Mantener la interfaz compacta sin sacrificar claridad.
+- [x] Definir unha xerarquía tipográfica consistente.
+- [x] Unificar iconas, marxes, radios e espazado.
+- [x] Mellorar o comportamento con escalado DPI.
+- [x] Evitar pestanexos e cambios bruscos durante as actualizacións.
+- [x] Deseñar estados de carga, erro e desconexión.
+- [x] Asegurar a navegación por teclado e un foco visible.
+- [x] Revisar contraste e lexibilidade.
+- [x] Manter a interface compacta sen sacrificar claridade.
 
-## Registro de entregas
+## Rexistro de entregas
 
-- [x] Auditar la implementación inicial y marcar únicamente requisitos verificables.
-- [x] Añadir el pet flotante configurable, persistente y adaptado a cambios de pantalla.
-- [x] Separar Bag y Shop y añadir confirmaciones, motivos de bloqueo y feedback inmediato.
-- [x] Personalizar el contenido del tooltip de la bandeja y usar el personaje como icono.
-- [x] Permitir elegir un representante de la colección sin cambiar el compañero activo.
-- [x] Sustituir los límites en texto plano por barras con modo usado/restante y colores de urgencia.
-- [x] Completar Home, celebraciones, Pokédex paginada y navegación por proveedor.
-- [x] Añadir temas, idioma, umbrales, estados de actualización e importación/exportación segura.
-- [x] Ejecutar QA automático, visual y de accesibilidad sobre el roadmap completo.
+- [x] Auditar a implementación inicial e marcar unicamente requisitos verificables.
+- [x] Engadir a mascota flotante configurable, persistente e adaptada aos cambios de pantalla.
+- [x] Separar Bag e Shop e engadir confirmacións, motivos de bloqueo e resposta inmediata.
+- [x] Personalizar o contido do texto de axuda da bandexa e usar o personaxe como icona.
+- [x] Permitir escoller un representante da colección sen cambiar o compañeiro activo.
+- [x] Substituír os límites en texto simple por barras con modo usado/restante e cores de urxencia.
+- [x] Completar Home, celebracións, Pokédex paxinada e navegación por provedor.
+- [x] Engadir temas, idioma dos nomes dos Pokémon, limiares, estados de actualización e importación/exportación segura.
+- [x] Executar controis automáticos, visuais e de accesibilidade sobre a implementación da folla de ruta.
