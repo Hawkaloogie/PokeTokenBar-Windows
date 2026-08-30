@@ -66,6 +66,7 @@ from .formatting import (
     limit_reset_expiry,
     limit_reset_tray_warning,
     money,
+    ordered_limit_windows,
     provider_limit_rows,
 )
 from .floating_pet import (
@@ -665,12 +666,24 @@ class MainWindow(QMainWindow):
         self.evolution_label.setWordWrap(True)
         self.evolution_label.setStyleSheet("color: #6b7280;")
         self.progress_label = QLabel("")
+        self.progress_percent_label = QLabel("0%")
+        percent_font = self.progress_percent_label.font()
+        percent_font.setBold(True)
+        self.progress_percent_label.setFont(percent_font)
+        self.progress_percent_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        progress_stats = QHBoxLayout()
+        progress_stats.setContentsMargins(0, 0, 0, 0)
+        progress_stats.addWidget(self.progress_label)
+        progress_stats.addStretch(1)
+        progress_stats.addWidget(self.progress_percent_label)
         self.progress = QProgressBar()
         self.progress.setRange(0, 1000)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(12)
         meta.addWidget(self.name_label)
         meta.addWidget(self.detail_label)
         meta.addWidget(self.evolution_label)
-        meta.addWidget(self.progress_label)
+        meta.addLayout(progress_stats)
         meta.addWidget(self.progress)
         meta.addStretch(1)
         hero.addLayout(meta, 1)
@@ -705,14 +718,17 @@ class MainWindow(QMainWindow):
         self.providers_list = QListWidget()
         self.providers_tabs.addTab(self.providers_list, "Summary")
         self.providers_tabs.tabBar().hide()
-        layout.addWidget(self.providers_tabs, 1)
+        self.providers_tabs.setMaximumHeight(130)
+        layout.addWidget(self.providers_tabs)
 
         limits_label = QLabel("Official limits")
         lf = limits_label.font(); lf.setBold(True); limits_label.setFont(lf)
         layout.addWidget(limits_label)
         self.limits_list = QListWidget()
-        self.limits_list.setMaximumHeight(150)
-        layout.addWidget(self.limits_list)
+        self.limits_list.setMinimumHeight(190)
+        self.limits_list.setWordWrap(True)
+        self.limits_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        layout.addWidget(self.limits_list, 1)
         return root
 
     def _build_collection(self) -> QWidget:
@@ -1138,18 +1154,13 @@ class MainWindow(QMainWindow):
                 provider_list.addItem(f"Estimated cost today · {money(usage.today_cost)}")
                 self.providers_tabs.addTab(provider_list, PROVIDER_LABELS.get(key, key.title()))
         self.providers_tabs.tabBar().setVisible(len(snapshot.providers) > 1)
+        self._fit_provider_panel()
 
         self.limits_list.clear()
         any_limits = False
         for key, limits in result.limits.items():
             label = PROVIDER_LABELS.get(key, key.title())
-            ordered_windows = sorted(
-                limits.windows,
-                key=lambda window: (
-                    window.resets_at is None,
-                    window.resets_at.timestamp() if window.resets_at is not None else float("inf"),
-                ),
-            )
+            ordered_windows = ordered_limit_windows(limits)
             for index, row in enumerate(provider_limit_rows(label, limits)):
                 any_limits = True
                 if index < len(ordered_windows):
@@ -1192,6 +1203,7 @@ class MainWindow(QMainWindow):
         ratio = min(1.0, value / max(1, target))
         self.progress.setValue(round(ratio * 1000))
         self.progress_label.setText(f"{compact_tokens(value)} / {compact_tokens(target)}")
+        self.progress_percent_label.setText(f"{round(ratio * 100)}%")
         self._render_collection()
         self._render_bag_shop()
         self.refresh_button.setEnabled(True)
@@ -1199,6 +1211,19 @@ class MainWindow(QMainWindow):
         self.refresh_status.setText(("Updated with warnings · " if result.scan_errors else "Updated · ") + stamp)
         self.setUpdatesEnabled(True)
         self.update()
+
+    def _fit_provider_panel(self) -> None:
+        lists: list[QListWidget] = []
+        for index in range(self.providers_tabs.count()):
+            widget = self.providers_tabs.widget(index)
+            if isinstance(widget, QListWidget):
+                lists.append(widget)
+        rows = max((widget.count() for widget in lists), default=1)
+        row_height = max(22, self.providers_list.fontMetrics().height() + 8)
+        tabs_height = self.providers_tabs.tabBar().sizeHint().height() if self.providers_tabs.tabBar().isVisible() else 0
+        height = min(150, max(42, min(rows, 4) * row_height + tabs_height + 10))
+        self.providers_tabs.setMinimumHeight(height)
+        self.providers_tabs.setMaximumHeight(height)
 
     def _limit_widget(self, provider: str, window) -> QWidget:
         widget = QWidget()
@@ -1236,6 +1261,7 @@ class MainWindow(QMainWindow):
         bar.setRange(0, 100)
         bar.setValue(round(value))
         bar.setTextVisible(False)
+        bar.setFixedHeight(10)
         warning = normalize_warning_threshold(
             self.settings.value(WARNING_THRESHOLD_KEY, DEFAULT_WARNING_THRESHOLD)
         )
@@ -1571,11 +1597,15 @@ class TrayController(QObject):
         menu = QMenu()
         open_action = QAction("Open PokeTokenBar", self)
         open_action.triggered.connect(self.show_window)
+        self.pet_visibility_action = QAction("Show desktop pet", self)
+        self.pet_visibility_action.setCheckable(True)
+        self.pet_visibility_action.triggered.connect(self._set_pet_visible)
         refresh_action = QAction("Refresh", self)
         refresh_action.triggered.connect(self.refresh)
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self.quit)
         menu.addAction(open_action)
+        menu.addAction(self.pet_visibility_action)
         menu.addAction(refresh_action)
         menu.addSeparator()
         menu.addAction(quit_action)
@@ -1590,16 +1620,12 @@ class TrayController(QObject):
             warning_percent=self.warning_threshold,
             critical_percent=self.critical_threshold,
         )
-        self.floating_pet.enabled_changed.connect(
-            lambda enabled: self.window.sync_floating_pet_settings(enabled=enabled)
-        )
+        self.floating_pet.enabled_changed.connect(self._sync_pet_visibility)
         self.floating_pet.size_changed.connect(
             lambda size: self.window.sync_floating_pet_settings(size=size)
         )
-        self.window.sync_floating_pet_settings(
-            enabled=self.floating_pet.enabled,
-            size=self.floating_pet.size,
-        )
+        self._sync_pet_visibility(self.floating_pet.enabled)
+        self.window.sync_floating_pet_settings(size=self.floating_pet.size)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
@@ -1646,9 +1672,15 @@ class TrayController(QObject):
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
             self.show_window()
 
+    def _sync_pet_visibility(self, enabled: bool) -> None:
+        self.window.sync_floating_pet_settings(enabled=bool(enabled))
+        self.pet_visibility_action.blockSignals(True)
+        self.pet_visibility_action.setChecked(bool(enabled))
+        self.pet_visibility_action.blockSignals(False)
+
     def _set_pet_visible(self, visible: bool) -> None:
         self.floating_pet.set_enabled(visible)
-        self.window.sync_floating_pet_settings(enabled=bool(visible))
+        self._sync_pet_visibility(self.floating_pet.enabled)
 
     def _set_pet_size(self, size: int) -> None:
         self.floating_pet.set_size(size)
@@ -1975,7 +2007,12 @@ class TrayController(QObject):
             self.refresh_pending = False
             QTimer.singleShot(0, self.refresh)
 
-    def _mutate_state(self, operation: Callable[[GameState], tuple[bool, str] | tuple[bool, str, list[str]]]) -> bool:
+    def _mutate_state(
+        self,
+        operation: Callable[[GameState], tuple[bool, str] | tuple[bool, str, list[str]]],
+        *,
+        refresh: bool = False,
+    ) -> bool:
         try:
             with self.state_lock:
                 candidate = copy.deepcopy(self.state)
@@ -1995,7 +2032,7 @@ class TrayController(QObject):
         self.window.set_state(self.state)
         self.window.action_feedback.setText(f"✓ {message}")
         QTimer.singleShot(5000, lambda: self.window.action_feedback.setText(""))
-        if events:
+        if events or refresh:
             self.refresh()
         return True
 
@@ -2018,7 +2055,10 @@ class TrayController(QObject):
         ) != QMessageBox.StandardButton.Yes:
             return
         old_nature = self.state.mon.nature if self.state.mon else None
-        self._mutate_state(lambda state: use_item(state, item, self.api))
+        self._mutate_state(
+            lambda state: use_item(state, item, self.api),
+            refresh=item == "rare_candy",
+        )
         if item == "mint" and self.state.mon and self.state.mon.nature != old_nature:
             self.window.action_feedback.setText(f"✓ New nature: {self.state.mon.nature}")
 

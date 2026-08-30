@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from .models import ProviderLimits
+from .models import LimitWindow, ProviderLimits
 
 ResetUrgency = Literal["neutral", "warning", "critical"]
 
@@ -127,6 +127,27 @@ def limit_reset_tray_warning(limits: ProviderLimits, now: datetime | None = None
     return f"{marker} reset expires {format_limit_datetime(expiry)}"
 
 
+def ordered_limit_windows(limits: ProviderLimits) -> list[LimitWindow]:
+    """Keep headline limits first, followed by reserves and ancillary caps."""
+
+    def key(window: LimitWindow) -> tuple[int, float, str]:
+        label = window.label.lower()
+        if label == "5-hour":
+            priority = 0
+        elif label == "weekly":
+            priority = 1
+        elif "luna reserve" in label:
+            priority = 2
+        elif "spend" in label:
+            priority = 4
+        else:
+            priority = 3
+        reset = window.resets_at.timestamp() if window.resets_at is not None else float("inf")
+        return priority, reset, label
+
+    return sorted(limits.windows, key=key)
+
+
 def provider_limit_rows(
     provider_label: str,
     limits: ProviderLimits,
@@ -134,7 +155,7 @@ def provider_limit_rows(
 ) -> list[LimitDisplayRow]:
     window_rows: list[LimitDisplayRow] = []
     plan = f" · {limits.plan}" if limits.plan else ""
-    for window in limits.windows:
+    for window in ordered_limit_windows(limits):
         reset = format_limit_datetime(window.resets_at) if window.resets_at else "unknown"
         window_rows.append(
             LimitDisplayRow(
@@ -146,13 +167,7 @@ def provider_limit_rows(
             )
         )
 
-    rows = sorted(
-        window_rows,
-        key=lambda row: (
-            row.occurs_at is None,
-            row.occurs_at.timestamp() if row.occurs_at is not None else float("inf"),
-        ),
-    )
+    rows = window_rows
 
     reset_summary = limit_reset_summary(limits)
     if reset_summary:

@@ -68,6 +68,8 @@ class LimitWindow:
     label: str
     used_percent: float
     resets_at: datetime | None = None
+    duration_minutes: int | None = None
+    identifier: str | None = None
 
     @property
     def remaining_percent(self) -> float:

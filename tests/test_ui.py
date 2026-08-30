@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QSettings
-from PySide6.QtWidgets import QApplication, QScrollArea
+from PySide6.QtCore import QEvent, QSettings, Qt
+from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea
 
 from poketokenbar_windows.models import (
     LimitWindow,
@@ -17,11 +19,13 @@ from poketokenbar_windows.models import (
     ProviderUsage,
     UsageSnapshot,
 )
-from poketokenbar_windows.state import CatchRecord, GameState
+from poketokenbar_windows.pokemon import EGG_HATCH_THRESHOLD, RARE_CANDY_XP
+from poketokenbar_windows.state import CatchRecord, GameState, MonState
 from poketokenbar_windows.ui import (
     DesktopPet,
     MainWindow,
     RefreshResult,
+    TrayController,
     _migrate_legacy_settings,
     theme_stylesheet,
     tray_tooltip,
@@ -85,6 +89,7 @@ class UITests(unittest.TestCase):
         window.render(RefreshResult(one, {}, {}, state, [], None, "Pokemon Egg"))
         self.assertEqual(window.providers_tabs.count(), 1)
         self.assertFalse(window.providers_tabs.tabBar().isVisible())
+        self.assertLess(window.providers_tabs.maximumHeight(), window.limits_list.minimumHeight())
 
         two = UsageSnapshot(providers={
             "codex": ProviderUsage("codex", today_tokens=10),
@@ -92,6 +97,38 @@ class UITests(unittest.TestCase):
         })
         window.render(RefreshResult(two, {}, {}, state, [], None, "Pokemon Egg"))
         self.assertEqual(window.providers_tabs.count(), 3)
+
+    def test_companion_percentage_is_readable_above_the_thin_bar(self):
+        window = self._window()
+        state = GameState(egg_usage=EGG_HATCH_THRESHOLD // 2)
+        snapshot = UsageSnapshot(scanned_at=datetime.now(timezone.utc))
+        window.render(RefreshResult(snapshot, {}, {}, state, [], None, "Pokemon Egg"))
+        self.assertEqual(window.progress_percent_label.text(), "50%")
+        self.assertFalse(window.progress.isTextVisible())
+        self.assertEqual(window.progress.height(), 12)
+
+    def test_using_rare_candy_requests_a_full_refresh_without_an_evolution(self):
+        controller = TrayController.__new__(TrayController)
+        controller.state_lock = threading.Lock()
+        controller.state = GameState(
+            mon=MonState(1, [1, 2, 3], 0, 0, "common", False, "Hardy"),
+            inventory={"rare_candy": 1, "mint": 0, "shiny_charm": 0},
+        )
+        controller.store = Mock()
+        controller.window = Mock()
+        controller.api = FakeUIAPI()
+        controller.refresh = Mock()
+
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            controller._use_item("rare_candy")
+
+        self.assertEqual(controller.state.inventory["rare_candy"], 0)
+        self.assertEqual(controller.state.mon.used_at_stage, RARE_CANDY_XP)
+        controller.refresh.assert_called_once_with()
 
     def test_limit_progress_widget_does_not_duplicate_text(self):
         window = self._window()
@@ -102,6 +139,10 @@ class UITests(unittest.TestCase):
         item = window.limits_list.item(0)
         self.assertEqual(item.text(), "")
         self.assertIsNotNone(window.limits_list.itemWidget(item))
+        self.assertEqual(
+            window.limits_list.horizontalScrollBarPolicy(),
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+        )
 
     def test_collection_has_counts_paging_and_representative_choice(self):
         catches = [CatchRecord(3, 1, [1, 2, 3], "rare", True, "Bold", "2026-08-30T10:00:00")]

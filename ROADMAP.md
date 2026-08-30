@@ -33,6 +33,7 @@ Quedan fuera, salvo que resuelvan un problema visible en Windows:
 - [x] Mostrar el consumo al pasar el cursor.
 - [x] Superponer al pasar el cursor el porcentaje hasta eclosión, evolución o graduación.
 - [x] Ofrecer un menú contextual sencillo.
+- [x] Permitir volver a mostrarlo directamente desde el menú contextual de la bandeja.
 - [x] Mostrar alertas de límites mediante bocadillos.
 - [x] Mantenerlo dentro de una pantalla válida al cambiar monitores o resolución.
 
@@ -54,6 +55,8 @@ Quedan fuera, salvo que resuelvan un problema visible en Windows:
 - [x] Crear un resumen compacto de consumo y límites.
 - [x] Evitar grandes zonas vacías.
 - [x] Adaptar correctamente nombres y cifras largas.
+- [x] Ajustar dinámicamente la altura de proveedores para priorizar los límites oficiales.
+- [x] Mantener el porcentaje de progreso legible fuera del relleno de la barra.
 
 ### Celebraciones y feedback
 
@@ -126,6 +129,8 @@ Quedan fuera, salvo que resuelvan un problema visible en Windows:
 - [x] Evitar notificaciones repetidas mientras se mantiene el mismo estado.
 - [x] Añadir una previsión sencilla de agotamiento antes del reinicio.
 - [x] Señalar datos obsoletos sin confundirlos con un fallo de la aplicación.
+- [x] Mostrar Luna Reserve debajo de los límites Codex principales y antes de los créditos de reset.
+- [x] Evitar Rare Candy duplicados cuando el timestamp de reset fluctúa unos segundos.
 
 ## Tienda y mochila
 

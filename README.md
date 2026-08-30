@@ -6,7 +6,7 @@ A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/P
 
 ## What works
 
-- Windows 10/11 notification-area tray icon + Qt/PySide6 window, with current companion and stage progress in the tray tooltip
+- Windows 10/11 notification-area tray icon + Qt/PySide6 window, with current companion and stage progress in the tray tooltip and a right-click toggle for the floating pet
 - Opt-in interactive floating desktop pet: animated egg/Pokemon, 48–192 px sizing, drag-and-drop position persistence, hover usage/official-limit callout, click-to-open, context-menu hide, and transient limit/full-reset bubbles
 - Optional owned representative Pokemon for the desktop pet, independent of the actively progressing companion and preserving shiny variants
 - Configurable Windows balloon/toast-style notifications: deduplicated official-limit warnings (80% warning and 95% critical by default) plus an independent toggle for hatch/evolution/graduation/Rare Candy events
@@ -17,15 +17,25 @@ A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/P
 - Bag and token shop: Rare Candy, Mint, Shiny Charm, normal/Uncommon/Rare eggs
 - Separate Home, Collection, Bag, Shop, and Settings areas; paged Pokédex, Shiny sprite toggle, catch history, evolution line, and short in-app celebrations
 - Configurable light/dark/system theme, refresh interval, limit thresholds, used/remaining percentages, tray fields, notifications, Pokémon-name language, and save import/export
-- Official-limit progress bars with reset countdowns, simple depletion forecasts, stale/error states, and deduplicated warning/critical alerts
-- Rare Candy rewards when an official 5-hour/weekly limit reaches 100%, with upstream-compatible first-snapshot seeding
+- Official-limit progress bars with reset countdowns, simple depletion forecasts, stale/error states, deduplicated warning/critical alerts, and Codex Luna Reserve below the headline 5-hour/weekly limits
+- Edge-triggered Rare Candy rewards when an official time window reaches 100%, with upstream-compatible first-snapshot seeding and stable identities that ignore one-second reset-time drift
 - Install-time usage baseline: pre-install usage is never retroactively converted into growth or shop currency
 - Collection/catch history and persistent state under `%APPDATA%\PokeTokenBar-Windows`
 - Sprite/API cache under `%LOCALAPPDATA%\PokeTokenBar-Windows\Cache`
 - Start with Windows via `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 - Local token/cost aggregation for Claude Code, Codex, Gemini CLI, OpenCode, Hermes Agent, Cursor, Grok CLI, GitHub Copilot CLI, and Kiro CLI
 - Claude official limits via `~\.claude\.credentials.json`
-- Codex official remaining limits and available reset-credit expiry via `codex app-server --stdio`; limit windows are ordered chronologically and each reset credit stays last in its provider block, turns amber when it expires before Weekly or within one week, red within 72 hours, and adds a matching 🟠/🔴 warning to the tray tooltip
+- Codex official remaining limits and available reset-credit expiry via `codex app-server --stdio`; headline limits stay first, Luna Reserve follows them, and each reset credit stays last in its provider block, turns amber when it expires before Weekly or within one week, red within 72 hours, and adds a matching 🟠/🔴 warning to the tray tooltip
+
+## Game loop and items
+
+Only one egg or companion is raised at a time; previously reached species remain in the Pokédex. A normal egg hatches after 5M newly observed tokens. Completing the final stage graduates the companion automatically and starts a fresh egg, so buying an egg is only a paid reroll that discards the unfinished active companion. Normal, Uncommon+, and Rare+ shop eggs cost 1B, 2.5B, and 4B wallet tokens.
+
+- **Rare Candy** adds 100M progression without altering real usage totals. Filling a session-class limit grants one; filling a weekly-class limit (including Luna Reserve) grants five. Using one schedules an immediate full refresh.
+- **Mint** costs 100M and rerolls the active companion's cosmetic nature.
+- **Shiny Charm** costs 3B, is permanent, and improves future hatch odds from 1/64 to 1/48; it is not retroactive.
+
+The default automatic refresh is every five minutes. Each refresh scans local usage **and** fetches official limits before applying growth, alerts, and Rare Candy rewards.
 
 ## Install
 
