@@ -19,6 +19,8 @@ When upstream changes provider formats or game constants, compare these areas fi
 - `Sources/PokeTokenBar/Core/CursorUsageAPI.swift` -> `cursor.py`
 - `Sources/PokeTokenBar/Core/OAuthLimitsProvider.swift` -> `limits.py`
 - `Sources/PokeTokenBar/Core/CodexRateLimitsProvider.swift` -> `limits.py`
+- `Sources/PokeTokenBar/Core/UsageStore.swift` notification rules -> `notifications.py`, `pet_logic.py`
+- `Sources/PokeTokenBar/UI/SettingsView.swift` notification preferences -> `ui.py`
 - SwiftUI/AppKit files -> `ui.py`, `app.py`, and `windows.py`
 
 Known intentional gaps are tracked in `README.md` under **Parity / known gaps**.

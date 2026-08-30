@@ -22,6 +22,7 @@ from poketokenbar_windows.ui import (
     DesktopPet,
     MainWindow,
     RefreshResult,
+    _migrate_legacy_settings,
     theme_stylesheet,
     tray_tooltip,
 )
@@ -58,6 +59,24 @@ class UITests(unittest.TestCase):
             ["Home", "Collection", "Bag", "Shop", "Settings"],
         )
         self.assertIsInstance(window.tabs.widget(4), QScrollArea)
+
+    def test_legacy_desktop_pet_preferences_migrate_without_overwriting_current_values(self):
+        self.settings.setValue("pet_visible", True)
+        self.settings.setValue("pet_size", 113)
+        self.settings.setValue("notify_limits", False)
+        self.settings.setValue("limit_warning", 82)
+        self.settings.setValue("limit_critical", 97)
+        self.settings.setValue("notify_events", False)
+        self.settings.setValue("warnThreshold", 90)
+
+        _migrate_legacy_settings(self.settings)
+
+        self.assertTrue(self.settings.value("floating_pet/enabled", type=bool))
+        self.assertEqual(self.settings.value("floating_pet/size", type=int), 112)
+        self.assertFalse(self.settings.value("limitNotifications", type=bool))
+        self.assertEqual(self.settings.value("warnThreshold", type=int), 90)
+        self.assertEqual(self.settings.value("critThreshold", type=int), 95)
+        self.assertFalse(self.settings.value("companionNotifications", type=bool))
 
     def test_provider_tabs_only_appear_for_multiple_providers(self):
         window = self._window()

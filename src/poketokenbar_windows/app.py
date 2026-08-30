@@ -11,7 +11,8 @@ def _configure_windows_identity() -> None:
     if os.name != "nt":
         return
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PokeTokenBar.Windows")
+        app_id = "PokeTokenBar.Windows.Isolated" if os.environ.get("PTB_STATE_DIR", "").strip() else "PokeTokenBar.Windows"
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
     except (AttributeError, OSError):
         pass
 

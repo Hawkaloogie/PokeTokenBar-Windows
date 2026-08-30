@@ -9,6 +9,12 @@ from pathlib import Path
 APP_NAME = "PokeTokenBar"
 REGISTRY_VALUE_NAME = "PokeTokenBar Windows"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+GWL_STYLE = -16
+GWL_EXSTYLE = -20
+WS_CAPTION = 0x00C00000
+WS_EX_TOPMOST = 0x00000008
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_APPWINDOW = 0x00040000
 
 
 def user_profile() -> Path:
@@ -188,6 +194,72 @@ def apply_native_window_icon(hwnd: int, ico_path: Path) -> None:
         user32.SendMessageW(hwnd, 0x0080, 0, small)
     if big:
         user32.SendMessageW(hwnd, 0x0080, 1, big)
+
+
+def _window_long_functions(user32):
+    """Return pointer-width Win32 style accessors for 32- and 64-bit Python."""
+    import ctypes
+    from ctypes import wintypes
+
+    get_long = getattr(user32, "GetWindowLongPtrW", user32.GetWindowLongW)
+    set_long = getattr(user32, "SetWindowLongPtrW", user32.SetWindowLongW)
+    get_long.argtypes = [wintypes.HWND, ctypes.c_int]
+    get_long.restype = ctypes.c_ssize_t
+    set_long.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+    set_long.restype = ctypes.c_ssize_t
+    return get_long, set_long
+
+
+def apply_floating_tool_window_style(hwnd: int) -> None:
+    """Keep the interactive pet above windows but out of taskbar and Alt+Tab."""
+    if os.name != "nt" or not hwnd:
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    get_long, set_long = _window_long_functions(user32)
+    ex_style = int(get_long(hwnd, GWL_EXSTYLE))
+    ex_style = (ex_style | WS_EX_TOOLWINDOW | WS_EX_TOPMOST) & ~WS_EX_APPWINDOW
+    set_long(hwnd, GWL_EXSTYLE, ex_style)
+    user32.SetWindowPos.argtypes = [
+        wintypes.HWND,
+        wintypes.HWND,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+    ]
+    user32.SetWindowPos.restype = wintypes.BOOL
+    hwnd_topmost = wintypes.HWND(-1)
+    swp_nomove = 0x0002
+    swp_nosize = 0x0001
+    swp_noactivate = 0x0010
+    swp_framechanged = 0x0020
+    user32.SetWindowPos(
+        hwnd,
+        hwnd_topmost,
+        0,
+        0,
+        0,
+        0,
+        swp_nomove | swp_nosize | swp_noactivate | swp_framechanged,
+    )
+
+
+def native_window_styles(hwnd: int) -> dict[str, int]:
+    """Read native style bits for diagnostic/QA tooling without changing the window."""
+    if os.name != "nt" or not hwnd:
+        return {"style": 0, "ex_style": 0}
+    import ctypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    get_long, _ = _window_long_functions(user32)
+    return {
+        "style": int(get_long(hwnd, GWL_STYLE)),
+        "ex_style": int(get_long(hwnd, GWL_EXSTYLE)),
+    }
 
 
 def open_folder(path: Path) -> None:

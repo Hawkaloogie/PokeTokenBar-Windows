@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import sys
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -66,8 +68,34 @@ from .formatting import (
     money,
     provider_limit_rows,
 )
+from .floating_pet import (
+    PET_ALERTS_KEY,
+    PET_ENABLED_KEY,
+    PET_SIZE_KEY,
+    FloatingPetController,
+)
 from .limits import fetch_all_limits
 from .models import ProviderLimits, UsageSnapshot
+from .notifications import (
+    COMPANION_NOTIFICATIONS_KEY,
+    CRITICAL_MAX,
+    CRITICAL_MIN,
+    CRITICAL_THRESHOLD_KEY,
+    DEFAULT_COMPANION_NOTIFICATIONS,
+    DEFAULT_CRITICAL_THRESHOLD,
+    DEFAULT_LIMIT_NOTIFICATIONS,
+    DEFAULT_WARNING_THRESHOLD,
+    LIMIT_NOTIFICATIONS_KEY,
+    THRESHOLD_STEP,
+    WARNING_MAX,
+    WARNING_MIN,
+    WARNING_THRESHOLD_KEY,
+    companion_notification,
+    evaluate_limit_alerts,
+    normalize_critical_threshold,
+    normalize_warning_threshold,
+)
+from .pet_logic import PET_DEFAULT_SIZE, PET_MAX_SIZE, PET_MIN_SIZE, PET_SIZE_STEP, normalize_pet_size, settings_bool
 from .pokemon import EGG_HATCH_THRESHOLD, PokeAPIClient, egg_price, phase_threshold
 from .state import (
     GameState,
@@ -77,17 +105,14 @@ from .state import (
     buy_egg,
     buy_item,
     companion_progress_percent,
+    owned_representative_options,
+    representative_subject,
+    set_representative,
     usage_delta,
     use_item,
 )
 from .usage import PROVIDER_LABELS, scan_all
-from .windows import (
-    APP_NAME,
-    apply_native_window_icon,
-    autostart_enabled,
-    cache_dir,
-    set_autostart,
-)
+from .windows import APP_NAME, apply_native_window_icon, autostart_enabled, cache_dir, set_autostart, state_dir
 
 
 @dataclass(slots=True)
@@ -99,6 +124,49 @@ class RefreshResult:
     events: list[str]
     sprite_path: Path | None
     display_name: str
+    pet_sprite_path: Path | None = None
+    pet_display_name: str = "Pokemon Egg"
+    pet_is_egg: bool = True
+
+
+def application_settings() -> QSettings:
+    """Use an isolated INI backend for QA while preserving production registry settings."""
+    if os.environ.get("PTB_STATE_DIR", "").strip():
+        path = state_dir() / "settings.ini"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        settings = QSettings(str(path), QSettings.Format.IniFormat)
+    else:
+        settings = QSettings("PokeTokenBar", "PokeTokenBar-Windows")
+    _migrate_legacy_settings(settings)
+    return settings
+
+
+def _migrate_legacy_settings(settings: QSettings) -> None:
+    """Preserve preferences written by the first desktop-pet UI on master."""
+    migrations: tuple[tuple[str, str, Callable[[Any], Any]], ...] = (
+        ("pet_visible", PET_ENABLED_KEY, lambda value: settings_bool(value, False)),
+        ("pet_size", PET_SIZE_KEY, normalize_pet_size),
+        (
+            "notify_limits",
+            LIMIT_NOTIFICATIONS_KEY,
+            lambda value: settings_bool(value, DEFAULT_LIMIT_NOTIFICATIONS),
+        ),
+        ("limit_warning", WARNING_THRESHOLD_KEY, normalize_warning_threshold),
+        ("limit_critical", CRITICAL_THRESHOLD_KEY, normalize_critical_threshold),
+        (
+            "notify_events",
+            COMPANION_NOTIFICATIONS_KEY,
+            lambda value: settings_bool(value, DEFAULT_COMPANION_NOTIFICATIONS),
+        ),
+    )
+    changed = False
+    for legacy_key, current_key, convert in migrations:
+        if settings.contains(current_key) or not settings.contains(legacy_key):
+            continue
+        settings.setValue(current_key, convert(settings.value(legacy_key)))
+        changed = True
+    if changed:
+        settings.sync()
 
 
 def tray_tooltip(
@@ -831,20 +899,31 @@ class MainWindow(QMainWindow):
         desktop = QGroupBox("Desktop pet")
         desktop_layout = QVBoxLayout(desktop)
         self.pet_check = QCheckBox("Show companion on the desktop")
-        self.pet_check.setChecked(self.settings.value("pet_visible", True, type=bool))
+        self.pet_check.setChecked(
+            settings_bool(self.settings.value(PET_ENABLED_KEY, False), False)
+        )
         self.pet_check.toggled.connect(self._save_pet_visibility)
         desktop_layout.addWidget(self.pet_check)
         pet_size_row = QHBoxLayout()
         pet_size_row.addWidget(QLabel("Size"))
         self.pet_size_slider = QSlider(Qt.Orientation.Horizontal)
-        self.pet_size_slider.setRange(64, 192)
-        self.pet_size_slider.setSingleStep(16)
-        self.pet_size_slider.setValue(int(self.settings.value("pet_size", 112)))
+        self.pet_size_slider.setRange(PET_MIN_SIZE, PET_MAX_SIZE)
+        self.pet_size_slider.setSingleStep(PET_SIZE_STEP)
+        self.pet_size_slider.setPageStep(PET_SIZE_STEP)
+        self.pet_size_slider.setTickInterval(PET_SIZE_STEP)
+        self.pet_size_slider.setValue(
+            normalize_pet_size(self.settings.value(PET_SIZE_KEY, PET_DEFAULT_SIZE))
+        )
         self.pet_size_slider.valueChanged.connect(self._save_pet_size)
         pet_size_row.addWidget(self.pet_size_slider, 1)
         self.pet_size_label = QLabel(f"{self.pet_size_slider.value()} px")
         pet_size_row.addWidget(self.pet_size_label)
         desktop_layout.addLayout(pet_size_row)
+        self.pet_alerts_check = self._setting_check(
+            "Show transient usage and full-reset bubbles", PET_ALERTS_KEY, True
+        )
+        desktop_layout.addWidget(self.pet_alerts_check)
+        self._set_pet_controls_enabled(self.pet_check.isChecked())
         layout.addWidget(desktop)
 
         tray_group = QGroupBox("Tray tooltip")
@@ -859,23 +938,39 @@ class MainWindow(QMainWindow):
         limits_group = QGroupBox("Limits")
         limits_layout = QVBoxLayout(limits_group)
         self.remaining_check = self._setting_check("Show remaining percentage", "limits_show_remaining", False)
-        self.limit_notifications_check = self._setting_check("Limit notifications", "notify_limits", True)
-        self.event_notifications_check = self._setting_check("Pokémon event notifications", "notify_events", True)
+        self.limit_notifications_check = self._setting_check(
+            "Limit notifications", LIMIT_NOTIFICATIONS_KEY, DEFAULT_LIMIT_NOTIFICATIONS
+        )
+        self.event_notifications_check = self._setting_check(
+            "Pokémon event notifications",
+            COMPANION_NOTIFICATIONS_KEY,
+            DEFAULT_COMPANION_NOTIFICATIONS,
+        )
         for check in (self.remaining_check, self.limit_notifications_check, self.event_notifications_check):
             limits_layout.addWidget(check)
         thresholds = QHBoxLayout()
         thresholds.addWidget(QLabel("Warning"))
         self.warning_spin = QSpinBox()
-        self.warning_spin.setRange(1, 98)
+        self.warning_spin.setRange(WARNING_MIN, WARNING_MAX)
+        self.warning_spin.setSingleStep(THRESHOLD_STEP)
         self.warning_spin.setSuffix("%")
-        self.warning_spin.setValue(int(self.settings.value("limit_warning", 70)))
+        self.warning_spin.setValue(
+            normalize_warning_threshold(
+                self.settings.value(WARNING_THRESHOLD_KEY, DEFAULT_WARNING_THRESHOLD)
+            )
+        )
         self.warning_spin.valueChanged.connect(self._save_warning_threshold)
         thresholds.addWidget(self.warning_spin)
         thresholds.addWidget(QLabel("Critical"))
         self.critical_spin = QSpinBox()
-        self.critical_spin.setRange(2, 100)
+        self.critical_spin.setRange(CRITICAL_MIN, CRITICAL_MAX)
+        self.critical_spin.setSingleStep(THRESHOLD_STEP)
         self.critical_spin.setSuffix("%")
-        self.critical_spin.setValue(int(self.settings.value("limit_critical", 90)))
+        self.critical_spin.setValue(
+            normalize_critical_threshold(
+                self.settings.value(CRITICAL_THRESHOLD_KEY, DEFAULT_CRITICAL_THRESHOLD)
+            )
+        )
         self.critical_spin.valueChanged.connect(self._save_critical_threshold)
         thresholds.addWidget(self.critical_spin)
         thresholds.addStretch(1)
@@ -933,26 +1028,47 @@ class MainWindow(QMainWindow):
 
     def _save_preference(self, key: str, value: Any) -> None:
         self.settings.setValue(key, value)
+        self.settings.sync()
         self.preferences_changed.emit()
 
     def _save_warning_threshold(self, value: int) -> None:
-        if value >= self.critical_spin.value():
-            self.critical_spin.setValue(min(100, value + 1))
-        self._save_preference("limit_warning", value)
+        normalized = normalize_warning_threshold(value)
+        if normalized != value:
+            self.warning_spin.blockSignals(True)
+            self.warning_spin.setValue(normalized)
+            self.warning_spin.blockSignals(False)
+        if normalized >= self.critical_spin.value():
+            self.critical_spin.setValue(
+                normalize_critical_threshold(normalized + THRESHOLD_STEP)
+            )
+        self._save_preference(WARNING_THRESHOLD_KEY, normalized)
 
     def _save_critical_threshold(self, value: int) -> None:
-        if value <= self.warning_spin.value():
-            self.warning_spin.setValue(max(1, value - 1))
-        self._save_preference("limit_critical", value)
+        normalized = normalize_critical_threshold(value)
+        if normalized != value:
+            self.critical_spin.blockSignals(True)
+            self.critical_spin.setValue(normalized)
+            self.critical_spin.blockSignals(False)
+        if normalized <= self.warning_spin.value():
+            self.warning_spin.setValue(
+                normalize_warning_threshold(normalized - THRESHOLD_STEP)
+            )
+        self._save_preference(CRITICAL_THRESHOLD_KEY, normalized)
 
     def _save_pet_visibility(self, visible: bool) -> None:
-        self.settings.setValue("pet_visible", visible)
+        self.settings.setValue(PET_ENABLED_KEY, visible)
+        self._set_pet_controls_enabled(visible)
         self.pet_visibility_changed.emit(visible)
 
     def _save_pet_size(self, size: int) -> None:
-        self.settings.setValue("pet_size", size)
-        self.pet_size_label.setText(f"{size} px")
-        self.pet_size_changed.emit(size)
+        normalized = normalize_pet_size(size)
+        if normalized != size:
+            self.pet_size_slider.blockSignals(True)
+            self.pet_size_slider.setValue(normalized)
+            self.pet_size_slider.blockSignals(False)
+        self.settings.setValue(PET_SIZE_KEY, normalized)
+        self.pet_size_label.setText(f"{normalized} px")
+        self.pet_size_changed.emit(normalized)
 
     def _save_interval(self) -> None:
         self.settings.setValue("refresh_minutes", self.interval_combo.currentData())
@@ -966,6 +1082,23 @@ class MainWindow(QMainWindow):
             self.autostart_check.setChecked(not enabled)
             self.autostart_check.blockSignals(False)
             QMessageBox.warning(self, "Autostart", "Windows could not change the startup setting.")
+
+    def _set_pet_controls_enabled(self, enabled: bool) -> None:
+        self.pet_size_slider.setEnabled(enabled)
+        self.pet_size_label.setEnabled(enabled)
+        self.pet_alerts_check.setEnabled(enabled)
+
+    def sync_floating_pet_settings(self, *, enabled: bool | None = None, size: int | None = None) -> None:
+        if enabled is not None and self.pet_check.isChecked() != enabled:
+            self.pet_check.blockSignals(True)
+            self.pet_check.setChecked(enabled)
+            self.pet_check.blockSignals(False)
+            self._set_pet_controls_enabled(enabled)
+        if size is not None and self.pet_size_slider.value() != size:
+            self.pet_size_slider.blockSignals(True)
+            self.pet_size_slider.setValue(size)
+            self.pet_size_slider.blockSignals(False)
+            self.pet_size_label.setText(f"{size} px")
 
     def set_state(self, state: GameState) -> None:
         self.state = state
@@ -1103,8 +1236,12 @@ class MainWindow(QMainWindow):
         bar.setRange(0, 100)
         bar.setValue(round(value))
         bar.setTextVisible(False)
-        warning = int(self.settings.value("limit_warning", 70))
-        critical = max(warning + 1, int(self.settings.value("limit_critical", 90)))
+        warning = normalize_warning_threshold(
+            self.settings.value(WARNING_THRESHOLD_KEY, DEFAULT_WARNING_THRESHOLD)
+        )
+        critical = normalize_critical_threshold(
+            self.settings.value(CRITICAL_THRESHOLD_KEY, DEFAULT_CRITICAL_THRESHOLD)
+        )
         color = "#16a34a" if used < warning else ("#d97706" if used < critical else "#dc2626")
         bar.setStyleSheet(f"QProgressBar::chunk {{ background: {color}; border-radius: 3px; }}")
         layout.addWidget(title)
@@ -1142,14 +1279,25 @@ class MainWindow(QMainWindow):
         self.representative_combo.blockSignals(True)
         self.representative_combo.clear()
         self.representative_combo.addItem("Follow current companion", None)
-        for species_id in sorted(owned):
-            prefix = "✨ " if owned[species_id] else ""
-            self.representative_combo.addItem(
-                f"{prefix}#{species_id:03d} {self.api.localized_name(species_id, self.state.language)}",
-                species_id,
+        selected = (
+            None
+            if self.state.representative_species_id is None
+            else (
+                self.state.representative_species_id,
+                bool(self.state.representative_is_shiny),
             )
-        selected = self.representative_combo.findData(self.state.representative_species_id)
-        self.representative_combo.setCurrentIndex(max(0, selected))
+        )
+        for subject in owned_representative_options(self.state):
+            assert subject.species_id is not None
+            data = (subject.species_id, subject.is_shiny)
+            prefix = "✨ " if subject.is_shiny else ""
+            self.representative_combo.addItem(
+                f"{prefix}#{subject.species_id:03d} "
+                f"{self.api.localized_name(subject.species_id, self.state.language)}",
+                data,
+            )
+        selected_index = self.representative_combo.findData(selected)
+        self.representative_combo.setCurrentIndex(max(0, selected_index))
         self.representative_combo.blockSignals(False)
         self.dex_empty.setVisible(not catches)
         self.catch_empty.setVisible(not catches)
@@ -1194,12 +1342,9 @@ class MainWindow(QMainWindow):
 
     def _owned_species(self) -> dict[int, bool]:
         owned: dict[int, bool] = {}
-        current = self._current_catch()
-        for catch in self.state.catches:
-            path = catch.path_ids or [catch.species_id]
-            limit = (self.state.mon.stage_index + 1) if (catch is current and self.state.mon) else len(path)
-            for species_id in path[:limit]:
-                owned[species_id] = owned.get(species_id, False) or catch.is_shiny
+        for subject in owned_representative_options(self.state):
+            assert subject.species_id is not None
+            owned[subject.species_id] = owned.get(subject.species_id, False) or subject.is_shiny
         return owned
 
     def _dex_cell(self, species_id: int, *, shiny: bool) -> QFrame:
@@ -1377,7 +1522,7 @@ class TrayController(QObject):
     def __init__(self, app: QApplication):
         super().__init__()
         self.app = app
-        self.settings = QSettings("PokeTokenBar", "PokeTokenBar-Windows")
+        self.settings = application_settings()
         self.store = StateStore()
         self.state = self.store.load()
         self.api = PokeAPIClient(_data_cache_dir())
@@ -1387,7 +1532,27 @@ class TrayController(QObject):
         self.bridge.failed.connect(self._on_failed)
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="poketokenbar-refresh")
         self.refresh_running = False
+        self.refresh_pending = False
         self.last_result: RefreshResult | None = None
+        self.qa_capture_scheduled = False
+        self.limit_alert_tiers: dict[str, int] = {}
+        self.limit_notifications_enabled = settings_bool(
+            self.settings.value(LIMIT_NOTIFICATIONS_KEY, DEFAULT_LIMIT_NOTIFICATIONS),
+            DEFAULT_LIMIT_NOTIFICATIONS,
+        )
+        self.companion_notifications_enabled = settings_bool(
+            self.settings.value(
+                COMPANION_NOTIFICATIONS_KEY,
+                DEFAULT_COMPANION_NOTIFICATIONS,
+            ),
+            DEFAULT_COMPANION_NOTIFICATIONS,
+        )
+        self.warning_threshold = normalize_warning_threshold(
+            self.settings.value(WARNING_THRESHOLD_KEY, DEFAULT_WARNING_THRESHOLD)
+        )
+        self.critical_threshold = normalize_critical_threshold(
+            self.settings.value(CRITICAL_THRESHOLD_KEY, DEFAULT_CRITICAL_THRESHOLD)
+        )
 
         self.window = MainWindow(self.state, self.settings, self.api)
         self.window.refresh_requested.connect(self._refresh_and_reschedule)
@@ -1400,15 +1565,6 @@ class TrayController(QObject):
         self.window.import_requested.connect(self._import_state)
         self._wire_shop_buttons()
         self._apply_theme()
-
-        self.pet = DesktopPet(self.settings)
-        self.pet.open_requested.connect(self.show_window)
-        self.pet.refresh_requested.connect(self.refresh)
-        self.pet.visibility_changed.connect(self._set_pet_visible)
-        self.pet.restore_position()
-        self._set_pet_visible(self.settings.value("pet_visible", True, type=bool))
-        self.app.screenAdded.connect(lambda _screen: self.pet.clamp_to_screen())
-        self.app.screenRemoved.connect(lambda _screen: self.pet.clamp_to_screen())
 
         self.tray = QSystemTrayIcon(_pokeball_icon(), self)
         self.tray.setToolTip(APP_NAME)
@@ -1426,6 +1582,24 @@ class TrayController(QObject):
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._tray_activated)
         self.tray.show()
+
+        self.floating_pet = FloatingPetController(
+            self.app,
+            self.settings,
+            self.show_window,
+            warning_percent=self.warning_threshold,
+            critical_percent=self.critical_threshold,
+        )
+        self.floating_pet.enabled_changed.connect(
+            lambda enabled: self.window.sync_floating_pet_settings(enabled=enabled)
+        )
+        self.floating_pet.size_changed.connect(
+            lambda size: self.window.sync_floating_pet_settings(size=size)
+        )
+        self.window.sync_floating_pet_settings(
+            enabled=self.floating_pet.enabled,
+            size=self.floating_pet.size,
+        )
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
@@ -1473,51 +1647,48 @@ class TrayController(QObject):
             self.show_window()
 
     def _set_pet_visible(self, visible: bool) -> None:
-        self.settings.setValue("pet_visible", visible)
-        if hasattr(self.window, "pet_check") and self.window.pet_check.isChecked() != visible:
-            self.window.pet_check.blockSignals(True)
-            self.window.pet_check.setChecked(visible)
-            self.window.pet_check.blockSignals(False)
-        if visible:
-            self.pet.restore_position()
-            self.pet.show()
-        else:
-            self.pet.hide()
+        self.floating_pet.set_enabled(visible)
+        self.window.sync_floating_pet_settings(enabled=bool(visible))
 
     def _set_pet_size(self, size: int) -> None:
-        self.pet.set_size(size)
-        self.pet.clamp_to_screen()
+        self.floating_pet.set_size(size)
+        self.window.sync_floating_pet_settings(size=self.floating_pet.size)
 
-    def _set_representative(self, species_id: int | None) -> None:
-        with self.state_lock:
-            candidate = copy.deepcopy(self.state)
-            candidate.representative_species_id = int(species_id) if species_id is not None else None
-            self.store.save(candidate)
-            self.state = candidate
-        self.window.set_state(candidate)
-        if self.last_result is not None:
-            self.last_result.state = candidate
-            self._update_companion_surfaces(self.last_result)
-
-    def _representative_visual(self, result: RefreshResult) -> tuple[Path | None, bool]:
-        species_id = result.state.representative_species_id
-        if species_id is None:
-            return result.sprite_path, result.state.mon is None
-        shiny = self.window._owned_species().get(species_id, False)
-        return self.api.sprite_path(species_id, shiny=shiny), False
+    def _set_representative(self, selection: object) -> None:
+        species_id: int | None = None
+        is_shiny: bool | None = None
+        if isinstance(selection, tuple) and len(selection) == 2:
+            species_id = int(selection[0])
+            is_shiny = bool(selection[1])
+        try:
+            with self.state_lock:
+                candidate = copy.deepcopy(self.state)
+                if not set_representative(candidate, species_id, is_shiny):
+                    QMessageBox.information(
+                        self.window,
+                        "PokeTokenBar",
+                        "That Pokémon is not currently owned.",
+                    )
+                    self.window.set_state(self.state)
+                    return
+                self.store.save(candidate)
+                self.state = candidate
+        except Exception:  # noqa: BLE001
+            QMessageBox.warning(
+                self.window,
+                "PokeTokenBar",
+                "The representative could not be changed. Your save was not changed.",
+            )
+            return
+        self.floating_pet.set_loading()
+        self.window.set_state(self.state)
+        self.refresh()
 
     def _update_companion_surfaces(self, result: RefreshResult) -> None:
-        sprite_path, egg = self._representative_visual(result)
-        self.pet.set_sprite(sprite_path, egg=egg)
-        mon = result.state.mon
-        if mon is None:
-            destination = "Hatching"
-        elif mon.stage_index + 1 < len(mon.path_ids):
-            destination = "Next evolution"
-        else:
-            destination = "Graduation"
-        self.pet.set_progress(companion_progress_percent(result.state), destination)
-        self.tray.setIcon(_icon_from_sprite(sprite_path, fallback_egg=egg))
+        self.floating_pet.update(result)
+        self.tray.setIcon(
+            _icon_from_sprite(result.pet_sprite_path, fallback_egg=result.pet_is_egg)
+        )
         self._update_tray_presentation()
 
     def _update_tray_presentation(self) -> None:
@@ -1531,9 +1702,33 @@ class TrayController(QObject):
             show_limit=self.settings.value("tray_show_limit", True, type=bool),
         )
         self.tray.setToolTip(tooltip)
-        self.pet.set_status(tooltip)
 
     def _preferences_changed(self) -> None:
+        self.limit_notifications_enabled = settings_bool(
+            self.settings.value(LIMIT_NOTIFICATIONS_KEY, DEFAULT_LIMIT_NOTIFICATIONS),
+            DEFAULT_LIMIT_NOTIFICATIONS,
+        )
+        self.companion_notifications_enabled = settings_bool(
+            self.settings.value(
+                COMPANION_NOTIFICATIONS_KEY,
+                DEFAULT_COMPANION_NOTIFICATIONS,
+            ),
+            DEFAULT_COMPANION_NOTIFICATIONS,
+        )
+        self.warning_threshold = normalize_warning_threshold(
+            self.settings.value(WARNING_THRESHOLD_KEY, DEFAULT_WARNING_THRESHOLD)
+        )
+        self.critical_threshold = normalize_critical_threshold(
+            self.settings.value(CRITICAL_THRESHOLD_KEY, DEFAULT_CRITICAL_THRESHOLD)
+        )
+        self.floating_pet.set_alerts_enabled(
+            settings_bool(self.settings.value(PET_ALERTS_KEY, True), True)
+        )
+        self.floating_pet.set_alert_thresholds(
+            self.warning_threshold,
+            self.critical_threshold,
+        )
+        self.settings.sync()
         self._apply_theme()
         if self.last_result is not None:
             self.window.render(self.last_result)
@@ -1605,6 +1800,7 @@ class TrayController(QObject):
 
     def refresh(self) -> None:
         if self.refresh_running:
+            self.refresh_pending = True
             return
         self.refresh_running = True
         self.window.refresh_button.setEnabled(False)
@@ -1626,12 +1822,32 @@ class TrayController(QObject):
                 events.extend(apply_limit_rewards(candidate, limits))
                 mon = candidate.mon
                 sprite = self.api.sprite_path(mon.current_id, shiny=mon.is_shiny) if mon else self.api.egg_sprite_path()
+                pet_subject = representative_subject(candidate)
+                pet_sprite = (
+                    self.api.sprite_path(pet_subject.species_id, shiny=pet_subject.is_shiny)
+                    if pet_subject.species_id is not None else self.api.egg_sprite_path()
+                )
                 self._prefetch_collection(candidate)
                 display_name = self.api.localized_name(mon.current_id, candidate.language) if mon else "Pokemon Egg"
+                pet_display_name = (
+                    self.api.localized_name(pet_subject.species_id, candidate.language)
+                    if pet_subject.species_id is not None else "Pokemon Egg"
+                )
                 self.store.save(candidate)
                 self.state = candidate
                 state = candidate
-            self.bridge.refreshed.emit(RefreshResult(snapshot, limits, errors, state, events, sprite, display_name))
+            self.bridge.refreshed.emit(RefreshResult(
+                snapshot=snapshot,
+                limits=limits,
+                scan_errors=errors,
+                state=state,
+                events=events,
+                sprite_path=sprite,
+                display_name=display_name,
+                pet_sprite_path=pet_sprite,
+                pet_display_name=pet_display_name,
+                pet_is_egg=pet_subject.is_egg,
+            ))
         except Exception as exc:  # noqa: BLE001
             self.bridge.failed.emit(f"{type(exc).__name__}: {exc}")
 
@@ -1649,47 +1865,100 @@ class TrayController(QObject):
         self.last_result = result
         self.window.render(result)
         self._update_companion_surfaces(result)
-        notify_events = self.settings.value("notify_events", True, type=bool)
         for event in result.events:
             if event.startswith("hatched:"):
                 shiny = bool(result.state.mon and result.state.mon.is_shiny)
                 self.window.celebrate(f"{result.display_name} hatched!", shiny=shiny)
-                if notify_events:
-                    sprite_icon = _icon_from_sprite(result.sprite_path)
-                    self.tray.showMessage("Pokemon hatched!", result.display_name, sprite_icon, 5000)
-                    self.pet.show_bubble(("✨ Shiny! " if shiny else "") + f"{result.display_name} hatched!")
             elif event.startswith("evolved:"):
-                self.window.celebrate(f"Your companion evolved into {result.display_name}!")
-                if notify_events:
-                    self.tray.showMessage("Evolution!", result.display_name, QSystemTrayIcon.MessageIcon.Information, 5000)
-                    self.pet.show_bubble(f"Evolution! {result.display_name}")
+                self.window.celebrate(
+                    f"Your companion evolved into {result.display_name}!"
+                )
             elif event.startswith("graduated:"):
                 self.window.celebrate("Your companion graduated! A new egg is ready.")
-                if notify_events:
-                    self.tray.showMessage("Pokemon graduated!", "A new egg is ready.", QSystemTrayIcon.MessageIcon.Information, 5000)
-                    self.pet.show_bubble("Graduated! A new egg is ready.")
-            elif event.startswith("candy:") and notify_events:
-                parts = event.split(":", 3)
-                count = parts[1] if len(parts) > 1 else "1"
-                self.tray.showMessage("Rare Candy earned!", f"You earned {count} Rare Candy.", QSystemTrayIcon.MessageIcon.Information, 5000)
-        if self.settings.value("notify_limits", True, type=bool):
-            alert_threshold = int(self.settings.value("limit_warning", 70))
-            critical_threshold = max(alert_threshold + 1, int(self.settings.value("limit_critical", 90)))
-            for provider, limits in result.limits.items():
-                for window in limits.windows:
-                    if window.used_percent < alert_threshold:
-                        continue
-                    reset_key = window.resets_at.isoformat() if window.resets_at else "unknown"
-                    severity = "critical" if window.used_percent >= critical_threshold else "warning"
-                    alert_key = f"{provider}|{window.label}|{reset_key}|{severity}"
-                    setting_key = f"last_limit_alert/{provider}/{window.label}"
-                    if self.settings.value(setting_key, "") == alert_key:
-                        continue
-                    self.settings.setValue(setting_key, alert_key)
-                    label = PROVIDER_LABELS.get(provider, provider.title())
-                    message = f"{window.used_percent:.0f}% of the {window.label} limit has been used."
-                    self.tray.showMessage(f"{label} limit warning", message, QSystemTrayIcon.MessageIcon.Warning, 5000)
-                    self.pet.show_bubble(f"{label}: {message}")
+        limit_alerts, self.limit_alert_tiers = evaluate_limit_alerts(
+            result.limits,
+            self.limit_alert_tiers,
+            warning_percent=self.warning_threshold,
+            critical_percent=self.critical_threshold,
+        )
+        if self.limit_notifications_enabled:
+            for alert in limit_alerts:
+                provider = PROVIDER_LABELS.get(alert.provider, alert.provider.title())
+                title = "Limit imminent" if alert.severity == "critical" else "Limit warning"
+                icon = (
+                    QSystemTrayIcon.MessageIcon.Critical
+                    if alert.severity == "critical"
+                    else QSystemTrayIcon.MessageIcon.Warning
+                )
+                self.tray.showMessage(
+                    title,
+                    f"{provider} {alert.window_label} at {alert.used_percent:.0f}%",
+                    icon,
+                    6_000,
+                )
+        self._schedule_qa_capture()
+        if self.companion_notifications_enabled:
+            for event in result.events:
+                notification = companion_notification(event, result.display_name)
+                if notification is None:
+                    continue
+                if notification.use_sprite_icon:
+                    icon = _icon_from_sprite(result.sprite_path)
+                else:
+                    icon = QSystemTrayIcon.MessageIcon.Information
+                self.tray.showMessage(notification.title, notification.body, icon, 5_000)
+        if self.refresh_pending:
+            self.refresh_pending = False
+            QTimer.singleShot(0, self.refresh)
+
+    def _schedule_qa_capture(self) -> None:
+        target = os.environ.get("PTB_QA_ARTIFACT_DIR", "").strip()
+        if not target or self.qa_capture_scheduled:
+            return
+        self.qa_capture_scheduled = True
+        QTimer.singleShot(1_000, lambda: self._write_qa_artifacts(Path(target)))
+
+    def _write_qa_artifacts(self, target: Path) -> None:
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            main_path = target / "main-window.png"
+            settings_path = target / "settings-tab.png"
+            pet_path = target / "floating-pet.png"
+            hover_path = target / "hover-callout.png"
+            self.window.grab().save(str(main_path), "PNG")
+            tabs = self.window.centralWidget()
+            if isinstance(tabs, QTabWidget):
+                current_tab = tabs.currentIndex()
+                tabs.setCurrentIndex(tabs.count() - 1)
+                QApplication.processEvents()
+                self.window.grab().save(str(settings_path), "PNG")
+                tabs.setCurrentIndex(current_tab)
+            self.floating_pet.pet.grab().save(str(pet_path), "PNG")
+            self.floating_pet.hover.grab().save(str(hover_path), "PNG")
+            report = {
+                "pid": os.getpid(),
+                "executable": sys.executable,
+                "frozen": bool(getattr(sys, "frozen", False)),
+                "settings_file": self.settings.fileName(),
+                "state_file": str(self.store.path),
+                "main_visible": self.window.isVisible(),
+                "main_size": [self.window.width(), self.window.height()],
+                "tray_visible": self.tray.isVisible(),
+                "tray_tooltip": self.tray.toolTip(),
+                "notifications": {
+                    "limit_alerts": self.limit_notifications_enabled,
+                    "warning_threshold": self.warning_threshold,
+                    "critical_threshold": self.critical_threshold,
+                    "companion_events": self.companion_notifications_enabled,
+                    "deduplicated_limit_windows": len(self.limit_alert_tiers),
+                },
+                "pet": self.floating_pet.qa_snapshot(),
+            }
+            tmp = target / "qa-report.tmp"
+            tmp.write_text(json.dumps(report, indent=2), encoding="utf-8")
+            tmp.replace(target / "qa-report.json")
+        except Exception:
+            self.qa_capture_scheduled = False
 
     def _on_failed(self, message: str) -> None:
         self.refresh_running = False
@@ -1702,8 +1971,11 @@ class TrayController(QObject):
             QSystemTrayIcon.MessageIcon.Warning,
             5000,
         )
+        if self.refresh_pending:
+            self.refresh_pending = False
+            QTimer.singleShot(0, self.refresh)
 
-    def _mutate_state(self, operation: Callable[[GameState], tuple[bool, str] | tuple[bool, str, list[str]]]) -> None:
+    def _mutate_state(self, operation: Callable[[GameState], tuple[bool, str] | tuple[bool, str, list[str]]]) -> bool:
         try:
             with self.state_lock:
                 candidate = copy.deepcopy(self.state)
@@ -1716,15 +1988,16 @@ class TrayController(QObject):
                     self.state = candidate
         except Exception:  # noqa: BLE001
             QMessageBox.warning(self.window, "PokeTokenBar", "The action could not be completed. Your save was not changed.")
-            return
+            return False
         if not ok:
             QMessageBox.information(self.window, "PokeTokenBar", message)
-            return
+            return False
         self.window.set_state(self.state)
         self.window.action_feedback.setText(f"✓ {message}")
         QTimer.singleShot(5000, lambda: self.window.action_feedback.setText(""))
         if events:
             self.refresh()
+        return True
 
     def _buy_item(self, item: str) -> None:
         labels = {"rare_candy": "Rare Candy", "mint": "Mint", "shiny_charm": "Shiny Charm"}
@@ -1764,11 +2037,12 @@ class TrayController(QObject):
             QMessageBox.StandardButton.Cancel,
         ) != QMessageBox.StandardButton.Yes:
             return
-        self._mutate_state(lambda state: buy_egg(state, tier))
+        if self._mutate_state(lambda state: buy_egg(state, tier)):
+            self.refresh()
 
     def quit(self) -> None:
         self.store.save(self.state)
-        self.pet.hide()
+        self.floating_pet.shutdown()
         self.tray.hide()
         self.executor.shutdown(wait=False, cancel_futures=True)
         self.app.quit()
