@@ -1347,6 +1347,7 @@ class TrayController(QObject):
         except Exception as exc:
             QMessageBox.warning(self.window, "PokeTokenBar", f"{type(exc).__name__}: {exc}")
             return
+        self.floating_pet.set_loading()
         self.window.set_state(self.state)
         self.refresh()
 

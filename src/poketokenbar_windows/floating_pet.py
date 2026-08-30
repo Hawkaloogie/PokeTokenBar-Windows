@@ -59,6 +59,28 @@ def _egg_pixmap(size: int) -> QPixmap:
     return pixmap
 
 
+def _loading_pixmap(size: int, active_dot: int) -> QPixmap:
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    margin = max(2, size // 48)
+    painter.setBrush(QColor(255, 255, 255, 210))
+    painter.setPen(QPen(QColor(55, 65, 81, 120), max(1, size // 48)))
+    painter.drawEllipse(margin, margin, size - margin * 2, size - margin * 2)
+    radius = max(3, size // 18)
+    spacing = max(radius * 3, size // 5)
+    center_x = size // 2
+    center_y = size // 2
+    painter.setPen(Qt.PenStyle.NoPen)
+    for index in range(3):
+        painter.setBrush(QColor(55, 65, 81, 220 if index == active_dot else 65))
+        x = center_x + (index - 1) * spacing - radius
+        painter.drawEllipse(x, center_y - radius, radius * 2, radius * 2)
+    painter.end()
+    return pixmap
+
+
 class FloatingPetWindow(QWidget):
     clicked = Signal()
     hide_requested = Signal()
@@ -80,7 +102,13 @@ class FloatingPetWindow(QWidget):
         self.label.setStyleSheet("background: transparent;")
         self.movie: QMovie | None = None
         self.sprite_path: Path | None = None
-        self.is_egg = True
+        self.is_egg = False
+        self.is_loading = True
+        self.loading_frame = 0
+        self.loading_timer = QTimer(self)
+        self.loading_timer.setInterval(350)
+        self.loading_timer.timeout.connect(self._advance_loading)
+        self.loading_timer.start()
         self.pet_size = normalize_pet_size(size)
         self._press_global: QPoint | None = None
         self._start_position: QPoint | None = None
@@ -102,6 +130,8 @@ class FloatingPetWindow(QWidget):
             self.movie.stop()
             self.movie.deleteLater()
             self.movie = None
+        self.is_loading = False
+        self.loading_timer.stop()
         self.sprite_path = path
         self.is_egg = is_egg
         self.label.clear()
@@ -115,7 +145,33 @@ class FloatingPetWindow(QWidget):
             movie.deleteLater()
         self._render_current_frame()
 
+    def set_loading(self) -> None:
+        if self.movie is not None:
+            self.movie.stop()
+            self.movie.deleteLater()
+            self.movie = None
+        self.is_loading = True
+        self.loading_frame = 0
+        self.sprite_path = None
+        self.is_egg = False
+        self.label.clear()
+        if self.isVisible():
+            self.loading_timer.start()
+        self._render_current_frame()
+
+    def _advance_loading(self) -> None:
+        if not self.is_loading:
+            self.loading_timer.stop()
+            return
+        self.loading_frame = (self.loading_frame + 1) % 3
+        self._render_current_frame()
+
     def _render_current_frame(self, *_args) -> None:
+        if self.is_loading:
+            self.label.setText("")
+            self.label.setStyleSheet("background: transparent;")
+            self.label.setPixmap(_loading_pixmap(self.pet_size, self.loading_frame))
+            return
         pixmap = QPixmap()
         if self.movie is not None:
             pixmap = self.movie.currentPixmap()
@@ -139,6 +195,13 @@ class FloatingPetWindow(QWidget):
         )
 
     def set_animation_running(self, running: bool) -> None:
+        if self.is_loading:
+            if running:
+                self.loading_timer.start()
+            else:
+                self.loading_timer.stop()
+            self._render_current_frame()
+            return
         if self.movie is None:
             return
         if running:
@@ -401,6 +464,11 @@ class FloatingPetController(QObject):
         self.result = result
         self._render_result(evaluate_alerts=True)
 
+    def set_loading(self) -> None:
+        self.hover.hide()
+        self.bubble.hide()
+        self.pet.set_loading()
+
     def _render_result(self, *, evaluate_alerts: bool) -> None:
         if self.result is None:
             return
@@ -458,6 +526,7 @@ class FloatingPetController(QObject):
 
     def shutdown(self) -> None:
         self.bubble_timer.stop()
+        self.pet.loading_timer.stop()
         if self.pet.movie is not None:
             self.pet.movie.stop()
         self.hover.close()
