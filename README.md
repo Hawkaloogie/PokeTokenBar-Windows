@@ -130,6 +130,10 @@ python -m compileall -q src tests
 
 CI runs those checks on `windows-latest` for Python 3.10 and 3.12 and builds a PyInstaller artifact on Windows.
 
+## Collaboration
+
+All contributors and coding agents must follow [AGENTS.md](AGENTS.md). In particular, fetch GitHub before starting, inspect active branches and pull requests for overlap, publish every new branch, and push every commit so parallel work remains visible.
+
 ## Publish to GitHub
 
 The repository is prepared for `pnmartinez/PokeTokenBar-Windows`. With GitHub CLI authenticated:
