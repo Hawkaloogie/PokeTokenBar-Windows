@@ -6,7 +6,17 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Sequence
 
-from .formatting import compact_tokens, format_limit_datetime, limit_reset_expiry, limit_reset_urgency
+from .formatting import (
+    DEFAULT_LIMIT_DISPLAY_MODE,
+    LimitDisplayMode,
+    compact_tokens,
+    format_limit_datetime,
+    highest_relevant_limit,
+    limit_alert_body,
+    limit_percent_text,
+    limit_reset_expiry,
+    limit_reset_urgency,
+)
 from .models import ProviderLimits, UsageSnapshot
 
 
@@ -216,6 +226,7 @@ def evaluate_pet_alerts(
     *,
     warning_percent: float = PET_WARNING_PERCENT,
     critical_percent: float = PET_CRITICAL_PERCENT,
+    display_mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
 ) -> tuple[list[PetAlert], dict[str, AlertMemory]]:
     """Edge-trigger limit and reset alerts while preserving one state per time window."""
     updated = dict(memory or {})
@@ -234,8 +245,8 @@ def evaluate_pet_alerts(
                 marker=marker,
                 label=window.label,
                 tier=tier,
-                title="Critical usage" if tier == 2 else "Usage warning",
-                body=f"{provider_label} {window.label} is {used:.0f}% used.",
+                title="Critical limit" if tier == 2 else "Limit warning",
+                body=limit_alert_body(provider_label, window.label, used, display_mode),
                 priority=used,
             )
             if alert is not None:
@@ -268,21 +279,19 @@ def choose_pet_alert(alerts: Sequence[PetAlert]) -> PetAlert | None:
     return max(alerts, key=lambda item: (item.tier, item.priority, item.key), default=None)
 
 
-def pet_hover_text(snapshot: UsageSnapshot, limits_by_provider: Mapping[str, ProviderLimits]) -> str:
+def pet_hover_text(
+    snapshot: UsageSnapshot,
+    limits_by_provider: Mapping[str, ProviderLimits],
+    display_mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
+) -> str:
     lines = [f"{compact_tokens(snapshot.today_tokens)} tokens today"]
-    active = {provider for provider, usage in snapshot.providers.items() if usage.today_tokens > 0}
-    candidates: list[tuple[float, float, str, Any]] = []
-    for provider, status in limits_by_provider.items():
-        if active and provider not in active:
-            continue
-        for window in status.windows:
-            if "spend" in window.label.lower():
-                continue
-            reset = window.resets_at.timestamp() if window.resets_at is not None else float("inf")
-            candidates.append((float(window.used_percent), -reset, provider, window))
-    if candidates:
-        _, _, provider, window = max(candidates, key=lambda item: (item[0], item[1]))
-        lines.append(f"{provider.title()} {window.label}: {window.remaining_percent:.0f}% left")
+    selected = highest_relevant_limit(snapshot, limits_by_provider)
+    if selected is not None:
+        provider, window = selected
+        lines.append(
+            f"{provider.title()} {window.label}: "
+            f"{limit_percent_text(window.used_percent, display_mode)}"
+        )
 
     reset_warnings: list[tuple[float, str]] = []
     for provider, status in limits_by_provider.items():

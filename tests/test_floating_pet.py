@@ -119,6 +119,17 @@ class PetAlertTests(unittest.TestCase):
         )
         self.assertEqual([alert.severity for alert in alerts], ["warning"])
 
+        remaining_alerts, _ = evaluate_pet_alerts(
+            limits,
+            warning_percent=90,
+            critical_percent=100,
+            display_mode="remaining",
+        )
+        self.assertEqual(
+            remaining_alerts[0].body,
+            "Codex 5-hour: 10% remaining (90% used).",
+        )
+
     def test_new_time_window_rearms_but_small_reset_drift_does_not(self):
         first_reset = self.now + timedelta(hours=4)
         alerts, memory = evaluate_pet_alerts(self._limits(85, first_reset), now=self.now)
@@ -163,7 +174,11 @@ class PetAlertTests(unittest.TestCase):
             ],
         )
         snapshot = UsageSnapshot(providers={"codex": ProviderUsage("codex", today_tokens=1234)})
-        self.assertIn("5-hour: 70% left", pet_hover_text(snapshot, {"codex": status}))
+        self.assertIn("5-hour: 30% used", pet_hover_text(snapshot, {"codex": status}))
+        self.assertIn(
+            "5-hour: 70% remaining",
+            pet_hover_text(snapshot, {"codex": status}, "remaining"),
+        )
         alerts, _ = evaluate_pet_alerts({"codex": status}, now=self.now)
         self.assertEqual(alerts, [])
 

@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Any, Literal, Mapping
 
-from .models import LimitWindow, ProviderLimits
+from .models import LimitWindow, ProviderLimits, UsageSnapshot
 
 ResetUrgency = Literal["neutral", "warning", "critical"]
+LimitDisplayMode = Literal["used", "remaining"]
+
+LIMIT_DISPLAY_MODE_KEY = "limit_display_mode"
+DEFAULT_LIMIT_DISPLAY_MODE: LimitDisplayMode = "used"
+FORECAST_ENABLED_KEY = "limits_forecast_enabled"
+DEFAULT_FORECAST_ENABLED = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -14,6 +20,12 @@ class LimitDisplayRow:
     text: str
     occurs_at: datetime | None
     urgency: ResetUrgency = "neutral"
+
+
+@dataclass(slots=True, frozen=True)
+class LimitForecast:
+    depletion_at: datetime
+    before_reset: bool
 
 
 def compact_tokens(value: int) -> str:
@@ -32,6 +44,99 @@ def money(value: float) -> str:
     if value < 0.005:
         return "$0.00"
     return f"${value:,.2f}"
+
+
+def companion_level_text(progress_percent: int | float) -> str:
+    """Present companion phase progress as a Pokemon-style level."""
+    level = max(0, min(100, round(float(progress_percent))))
+    return f"Lv. {level}"
+
+
+def normalize_limit_display_mode(value: Any) -> LimitDisplayMode:
+    return "remaining" if str(value).strip().lower() == "remaining" else "used"
+
+
+def limit_display_percent(
+    used_percent: float,
+    mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
+) -> float:
+    used = max(0.0, min(100.0, float(used_percent)))
+    return 100.0 - used if normalize_limit_display_mode(mode) == "remaining" else used
+
+
+def limit_percent_text(
+    used_percent: float,
+    mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
+) -> str:
+    normalized = normalize_limit_display_mode(mode)
+    suffix = "remaining" if normalized == "remaining" else "used"
+    return f"{limit_display_percent(used_percent, normalized):.0f}% {suffix}"
+
+
+def limit_alert_body(
+    provider_label: str,
+    window_label: str,
+    used_percent: float,
+    mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
+) -> str:
+    normalized = normalize_limit_display_mode(mode)
+    shown = limit_percent_text(used_percent, normalized)
+    if normalized == "remaining":
+        return f"{provider_label} {window_label}: {shown} ({limit_percent_text(used_percent, 'used')})."
+    return f"{provider_label} {window_label}: {shown}."
+
+
+def highest_relevant_limit(
+    snapshot: UsageSnapshot,
+    limits_by_provider: Mapping[str, ProviderLimits],
+) -> tuple[str, LimitWindow] | None:
+    """Pick the most-used non-spend limit from providers used today."""
+    active = {
+        provider
+        for provider, usage in snapshot.providers.items()
+        if usage.today_tokens > 0
+    }
+    candidates: list[tuple[float, float, str, LimitWindow]] = []
+    for provider, status in limits_by_provider.items():
+        if active and provider not in active:
+            continue
+        for window in status.windows:
+            if "spend" in window.label.lower():
+                continue
+            reset = window.resets_at.timestamp() if window.resets_at is not None else float("inf")
+            candidates.append((float(window.used_percent), -reset, provider, window))
+    if not candidates:
+        return None
+    _, _, provider, window = max(candidates, key=lambda item: (item[0], item[1]))
+    return provider, window
+
+
+def limit_forecast(
+    window: LimitWindow,
+    now: datetime | None = None,
+) -> LimitForecast | None:
+    """Extrapolate a 5-hour window from average utilization since its start."""
+    reset = window.resets_at
+    if reset is None:
+        return None
+    duration_minutes = window.duration_minutes
+    if duration_minutes is None and "5-hour" in window.label.lower():
+        duration_minutes = 300
+    if duration_minutes != 300:
+        return None
+
+    current = _now_for(reset, now)
+    remaining_seconds = (reset - current).total_seconds()
+    duration_seconds = duration_minutes * 60
+    elapsed_seconds = duration_seconds - remaining_seconds
+    used = max(0.0, min(100.0, float(window.used_percent)))
+    # Match upstream's 5% stability floor and require a meaningful observed slice.
+    if used < 5 or used >= 100 or elapsed_seconds < 60 or remaining_seconds <= 0:
+        return None
+    seconds_per_percent = elapsed_seconds / used
+    seconds_to_full = (100.0 - used) * seconds_per_percent
+    depletion_at = current + timedelta(seconds=seconds_to_full)
+    return LimitForecast(depletion_at=depletion_at, before_reset=depletion_at < reset)
 
 
 def format_limit_datetime(value: datetime) -> str:
@@ -152,6 +257,8 @@ def provider_limit_rows(
     provider_label: str,
     limits: ProviderLimits,
     now: datetime | None = None,
+    *,
+    display_mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
 ) -> list[LimitDisplayRow]:
     window_rows: list[LimitDisplayRow] = []
     plan = f" · {limits.plan}" if limits.plan else ""
@@ -161,7 +268,7 @@ def provider_limit_rows(
             LimitDisplayRow(
                 text=(
                     f"{provider_label}{plan} · {window.label}: "
-                    f"{window.remaining_percent:.0f}% left · resets {reset}"
+                    f"{limit_percent_text(window.used_percent, display_mode)} · resets {reset}"
                 ),
                 occurs_at=window.resets_at,
             )

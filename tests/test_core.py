@@ -19,11 +19,16 @@ from poketokenbar_windows.cursor import (
     workos_session_cookie,
 )
 from poketokenbar_windows.formatting import (
+    companion_level_text,
     compact_tokens,
     format_limit_datetime,
+    limit_alert_body,
+    limit_forecast,
+    limit_percent_text,
     limit_reset_summary,
     limit_reset_tray_warning,
     limit_reset_urgency,
+    normalize_limit_display_mode,
     provider_limit_rows,
 )
 from poketokenbar_windows.models import (
@@ -35,6 +40,7 @@ from poketokenbar_windows.pokemon import (
     EGG_HATCH_THRESHOLD,
     GRADUATION_TOTALS,
     HatchResult,
+    PokeAPIClient,
     egg_price,
     phase_threshold,
     rarity_from,
@@ -534,10 +540,63 @@ class CodexLimitsTests(unittest.TestCase):
         self.assertTrue(proc.terminated)
 
 
+class PokemonAssetTests(unittest.TestCase):
+    def test_item_sprite_uses_validated_runtime_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = PokeAPIClient(Path(tmp))
+            cached = client.sprite_dir / "item-poke-ball.png"
+            cached.write_bytes(b"cached")
+            self.assertEqual(client.item_sprite_path("poke-ball"), cached)
+            with self.assertRaises(ValueError):
+                client.item_sprite_path("../not-an-item")
+
+
 class FormattingTests(unittest.TestCase):
     def test_compact_tokens(self):
         self.assertEqual(compact_tokens(200_700_000), "200.7M")
         self.assertEqual(compact_tokens(1_000_000_000), "1B")
+
+    def test_companion_progress_uses_pokemon_level_copy(self):
+        self.assertEqual(companion_level_text(91), "Lv. 91")
+        self.assertEqual(companion_level_text(150), "Lv. 100")
+
+    def test_limit_display_mode_is_explicit_and_defaults_to_used(self):
+        self.assertEqual(normalize_limit_display_mode(None), "used")
+        self.assertEqual(normalize_limit_display_mode("remaining"), "remaining")
+        self.assertEqual(limit_percent_text(75, "used"), "75% used")
+        self.assertEqual(limit_percent_text(75, "remaining"), "25% remaining")
+        self.assertEqual(
+            limit_alert_body("Codex", "Weekly", 95, "remaining"),
+            "Codex Weekly: 5% remaining (95% used).",
+        )
+
+    def test_five_hour_forecast_extrapolates_average_window_utilization(self):
+        now = datetime(2026, 8, 31, 10, 0, tzinfo=timezone.utc)
+        fast = LimitWindow(
+            "5-hour",
+            75,
+            now + timedelta(hours=2),
+            duration_minutes=300,
+        )
+        forecast = limit_forecast(fast, now)
+        self.assertIsNotNone(forecast)
+        self.assertTrue(forecast.before_reset)
+        self.assertEqual(forecast.depletion_at, now + timedelta(hours=1))
+
+        slow = LimitWindow(
+            "5-hour",
+            30,
+            now + timedelta(hours=2),
+            duration_minutes=300,
+        )
+        self.assertFalse(limit_forecast(slow, now).before_reset)
+        unstable = LimitWindow(
+            "5-hour",
+            4,
+            now + timedelta(hours=2),
+            duration_minutes=300,
+        )
+        self.assertIsNone(limit_forecast(unstable, now))
 
     def test_limit_dates_include_weekday_and_calendar_date(self):
         self.assertEqual(
@@ -584,6 +643,7 @@ class FormattingTests(unittest.TestCase):
 
         rows = provider_limit_rows("Codex", limits, now)
         self.assertIn("5-hour", rows[0].text)
+        self.assertIn("10% used", rows[0].text)
         self.assertIn("Weekly:", rows[1].text)
         self.assertIn("Luna Reserve", rows[2].text)
         self.assertTrue(rows[3].text.startswith("[⚠ Codex · Full reset available"))

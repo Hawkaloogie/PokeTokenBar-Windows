@@ -7,6 +7,7 @@ from PySide6.QtCore import QPoint, QSize, Qt, QTimer, Signal, QObject
 from PySide6.QtGui import QColor, QContextMenuEvent, QMouseEvent, QMovie, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QMenu, QVBoxLayout, QWidget
 
+from .formatting import DEFAULT_LIMIT_DISPLAY_MODE, LimitDisplayMode
 from .pet_logic import (
     PET_ALERT_TTL_MS,
     PET_DEFAULT_SIZE,
@@ -346,6 +347,7 @@ class FloatingPetController(QObject):
         *,
         warning_percent: float = 80.0,
         critical_percent: float = 95.0,
+        display_mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
     ):
         super().__init__()
         self.app = app
@@ -355,6 +357,7 @@ class FloatingPetController(QObject):
         self.alerts_enabled = settings_bool(settings.value(PET_ALERTS_KEY, True), True)
         self.warning_percent = float(warning_percent)
         self.critical_percent = float(critical_percent)
+        self.display_mode = display_mode
         self.size = normalize_pet_size(settings.value(PET_SIZE_KEY, PET_DEFAULT_SIZE))
         self.result: Any | None = None
         self.alert_memory = load_alert_memory(settings.value(PET_ALERT_MEMORY_KEY, ""))
@@ -447,8 +450,19 @@ class FloatingPetController(QObject):
         self.warning_percent = float(warning_percent)
         self.critical_percent = float(critical_percent)
 
+    def set_limit_display_mode(self, display_mode: LimitDisplayMode) -> None:
+        self.display_mode = display_mode
+        if self.result is not None:
+            self.hover.set_text(
+                pet_hover_text(
+                    self.result.snapshot,
+                    self.result.limits,
+                    self.display_mode,
+                )
+            )
+
     def _apply_visibility(self) -> None:
-        if self.enabled:
+        if self.enabled and self.result is not None:
             self.pet.show()
             self.pet.raise_()
             self.pet.set_animation_running(True)
@@ -473,7 +487,13 @@ class FloatingPetController(QObject):
         if self.result is None:
             return
         self.pet.set_sprite(self.result.pet_sprite_path, is_egg=self.result.pet_is_egg)
-        self.hover.set_text(pet_hover_text(self.result.snapshot, self.result.limits))
+        self.hover.set_text(
+            pet_hover_text(
+                self.result.snapshot,
+                self.result.limits,
+                self.display_mode,
+            )
+        )
         if not self.enabled:
             self.pet.set_animation_running(False)
             return
@@ -485,6 +505,7 @@ class FloatingPetController(QObject):
                 self.alert_memory,
                 warning_percent=self.warning_percent,
                 critical_percent=self.critical_percent,
+                display_mode=self.display_mode,
             )
             self.settings.setValue(PET_ALERT_MEMORY_KEY, dump_alert_memory(self.alert_memory))
             self.settings.sync()
@@ -501,7 +522,13 @@ class FloatingPetController(QObject):
         if not hovering or not self.enabled or self.bubble.isVisible() or self.result is None:
             self.hover.hide()
             return
-        self.hover.set_text(pet_hover_text(self.result.snapshot, self.result.limits))
+        self.hover.set_text(
+            pet_hover_text(
+                self.result.snapshot,
+                self.result.limits,
+                self.display_mode,
+            )
+        )
         self._position_auxiliary_windows()
         self.hover.show()
         self.hover.raise_()

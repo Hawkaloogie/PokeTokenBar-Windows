@@ -62,10 +62,22 @@ from PySide6.QtWidgets import (
 )
 
 from .formatting import (
+    DEFAULT_FORECAST_ENABLED,
+    DEFAULT_LIMIT_DISPLAY_MODE,
+    FORECAST_ENABLED_KEY,
+    LIMIT_DISPLAY_MODE_KEY,
+    LimitDisplayMode,
+    companion_level_text,
     compact_tokens,
+    highest_relevant_limit,
+    limit_alert_body,
+    limit_display_percent,
+    limit_forecast,
+    limit_percent_text,
     limit_reset_expiry,
     limit_reset_tray_warning,
     money,
+    normalize_limit_display_mode,
     ordered_limit_windows,
     provider_limit_rows,
 )
@@ -128,6 +140,7 @@ class RefreshResult:
     pet_sprite_path: Path | None = None
     pet_display_name: str = "Pokemon Egg"
     pet_is_egg: bool = True
+    reveal_ball_path: Path | None = None
 
 
 def application_settings() -> QSettings:
@@ -166,6 +179,14 @@ def _migrate_legacy_settings(settings: QSettings) -> None:
             continue
         settings.setValue(current_key, convert(settings.value(legacy_key)))
         changed = True
+    if not settings.contains(LIMIT_DISPLAY_MODE_KEY) and settings.contains("limits_show_remaining"):
+        settings.setValue(
+            LIMIT_DISPLAY_MODE_KEY,
+            "remaining"
+            if settings_bool(settings.value("limits_show_remaining"), False)
+            else "used",
+        )
+        changed = True
     if changed:
         settings.sync()
 
@@ -176,6 +197,7 @@ def tray_tooltip(
     show_tokens: bool = True,
     show_cost: bool = False,
     show_limit: bool = True,
+    limit_display_mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
 ) -> str:
     parts: list[str] = []
     if show_tokens:
@@ -186,7 +208,7 @@ def tray_tooltip(
         parts.append(result.display_name)
     else:
         parts.append("egg")
-    parts.append(f"{companion_progress_percent(result.state)}% progress")
+    parts.append(companion_level_text(companion_progress_percent(result.state)))
 
     warnings: list[tuple[float, str]] = []
     for limits in result.limits.values():
@@ -195,9 +217,13 @@ def tray_tooltip(
         if warning and expiry is not None:
             warnings.append((expiry.timestamp(), warning))
     if show_limit:
-        percentages = [window.used_percent for limits in result.limits.values() for window in limits.windows]
-        if percentages:
-            parts.append(f"limit {max(percentages):.0f}%")
+        selected = highest_relevant_limit(result.snapshot, result.limits)
+        if selected is not None:
+            provider, window = selected
+            parts.append(
+                f"{provider.title()} {window.label}: "
+                f"{limit_percent_text(window.used_percent, limit_display_mode)}"
+            )
     if warnings:
         parts.append(min(warnings, key=lambda item: item[0])[1])
     return f"{APP_NAME} · {' · '.join(parts)}"
@@ -501,7 +527,9 @@ class DesktopPet(QWidget):
         self.setToolTip(text)
 
     def set_progress(self, percent: int, destination: str) -> None:
-        self.progress_overlay.setText(f"{destination} · {percent}%")
+        self.progress_overlay.setText(
+            f"{destination} · {companion_level_text(percent)}"
+        )
         self._position_progress_overlay()
 
     def _position_progress_overlay(self) -> None:
@@ -600,6 +628,14 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.api = api
         self.movie: QMovie | None = None
+        self.reveal_timer = QTimer(self)
+        self.reveal_timer.setInterval(70)
+        self.reveal_timer.timeout.connect(self._advance_companion_reveal)
+        self.reveal_frame = 0
+        self.reveal_target_path: Path | None = None
+        self.reveal_target_is_egg = False
+        self.reveal_ball_pixmap = QPixmap()
+        self.reveal_target_pixmap = QPixmap()
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(application_icon())
         self.setMinimumSize(520, 640)
@@ -666,7 +702,7 @@ class MainWindow(QMainWindow):
         self.evolution_label.setWordWrap(True)
         self.evolution_label.setStyleSheet("color: #6b7280;")
         self.progress_label = QLabel("")
-        self.progress_percent_label = QLabel("0%")
+        self.progress_percent_label = QLabel("Lv. 0")
         percent_font = self.progress_percent_label.font()
         percent_font.setBold(True)
         self.progress_percent_label.setFont(percent_font)
@@ -953,7 +989,46 @@ class MainWindow(QMainWindow):
 
         limits_group = QGroupBox("Limits")
         limits_layout = QVBoxLayout(limits_group)
-        self.remaining_check = self._setting_check("Show remaining percentage", "limits_show_remaining", False)
+        display_row = QHBoxLayout()
+        display_row.addWidget(QLabel("Display official limits as"))
+        self.limit_display_combo = QComboBox()
+        self.limit_display_combo.addItem("Used · quota consumed", "used")
+        self.limit_display_combo.addItem("Remaining · quota left", "remaining")
+        display_mode = normalize_limit_display_mode(
+            self.settings.value(
+                LIMIT_DISPLAY_MODE_KEY,
+                DEFAULT_LIMIT_DISPLAY_MODE,
+            )
+        )
+        self.limit_display_combo.setCurrentIndex(
+            max(0, self.limit_display_combo.findData(display_mode))
+        )
+        self.limit_display_combo.currentIndexChanged.connect(
+            lambda: self._save_preference(
+                LIMIT_DISPLAY_MODE_KEY,
+                str(self.limit_display_combo.currentData()),
+            )
+        )
+        display_row.addWidget(self.limit_display_combo)
+        display_row.addStretch(1)
+        limits_layout.addLayout(display_row)
+        display_hint = QLabel(
+            "This applies to Home, the tray tooltip, the desktop-pet hover and alerts. "
+            "Warning and critical thresholds always mean quota used."
+        )
+        display_hint.setWordWrap(True)
+        display_hint.setStyleSheet("color: #6b7280;")
+        limits_layout.addWidget(display_hint)
+        self.forecast_check = self._setting_check(
+            "Show 5-hour depletion forecast",
+            FORECAST_ENABLED_KEY,
+            DEFAULT_FORECAST_ENABLED,
+        )
+        self.forecast_check.setToolTip(
+            "Uses the average quota consumption since the current 5-hour window began "
+            "to estimate whether it will reach 100% before reset."
+        )
+        limits_layout.addWidget(self.forecast_check)
         self.limit_notifications_check = self._setting_check(
             "Limit notifications", LIMIT_NOTIFICATIONS_KEY, DEFAULT_LIMIT_NOTIFICATIONS
         )
@@ -962,14 +1037,14 @@ class MainWindow(QMainWindow):
             COMPANION_NOTIFICATIONS_KEY,
             DEFAULT_COMPANION_NOTIFICATIONS,
         )
-        for check in (self.remaining_check, self.limit_notifications_check, self.event_notifications_check):
+        for check in (self.limit_notifications_check, self.event_notifications_check):
             limits_layout.addWidget(check)
         thresholds = QHBoxLayout()
-        thresholds.addWidget(QLabel("Warning"))
+        thresholds.addWidget(QLabel("Warning at"))
         self.warning_spin = QSpinBox()
         self.warning_spin.setRange(WARNING_MIN, WARNING_MAX)
         self.warning_spin.setSingleStep(THRESHOLD_STEP)
-        self.warning_spin.setSuffix("%")
+        self.warning_spin.setSuffix("% used")
         self.warning_spin.setValue(
             normalize_warning_threshold(
                 self.settings.value(WARNING_THRESHOLD_KEY, DEFAULT_WARNING_THRESHOLD)
@@ -977,11 +1052,11 @@ class MainWindow(QMainWindow):
         )
         self.warning_spin.valueChanged.connect(self._save_warning_threshold)
         thresholds.addWidget(self.warning_spin)
-        thresholds.addWidget(QLabel("Critical"))
+        thresholds.addWidget(QLabel("Critical at"))
         self.critical_spin = QSpinBox()
         self.critical_spin.setRange(CRITICAL_MIN, CRITICAL_MAX)
         self.critical_spin.setSingleStep(THRESHOLD_STEP)
-        self.critical_spin.setSuffix("%")
+        self.critical_spin.setSuffix("% used")
         self.critical_spin.setValue(
             normalize_critical_threshold(
                 self.settings.value(CRITICAL_THRESHOLD_KEY, DEFAULT_CRITICAL_THRESHOLD)
@@ -1161,7 +1236,18 @@ class MainWindow(QMainWindow):
         for key, limits in result.limits.items():
             label = PROVIDER_LABELS.get(key, key.title())
             ordered_windows = ordered_limit_windows(limits)
-            for index, row in enumerate(provider_limit_rows(label, limits)):
+            for index, row in enumerate(
+                provider_limit_rows(
+                    label,
+                    limits,
+                    display_mode=normalize_limit_display_mode(
+                        self.settings.value(
+                            LIMIT_DISPLAY_MODE_KEY,
+                            DEFAULT_LIMIT_DISPLAY_MODE,
+                        )
+                    ),
+                )
+            ):
                 any_limits = True
                 if index < len(ordered_windows):
                     item = QListWidgetItem()
@@ -1203,7 +1289,9 @@ class MainWindow(QMainWindow):
         ratio = min(1.0, value / max(1, target))
         self.progress.setValue(round(ratio * 1000))
         self.progress_label.setText(f"{compact_tokens(value)} / {compact_tokens(target)}")
-        self.progress_percent_label.setText(f"{round(ratio * 100)}%")
+        self.progress_percent_label.setText(
+            companion_level_text(round(ratio * 100))
+        )
         self._render_collection()
         self._render_bag_shop()
         self.refresh_button.setEnabled(True)
@@ -1230,10 +1318,13 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(6, 4, 6, 4)
         used = max(0.0, min(100.0, window.used_percent))
-        remaining = 100.0 - used
-        show_remaining = self.settings.value("limits_show_remaining", False, type=bool)
-        value = remaining if show_remaining else used
-        suffix = "remaining" if show_remaining else "used"
+        display_mode = normalize_limit_display_mode(
+            self.settings.value(
+                LIMIT_DISPLAY_MODE_KEY,
+                DEFAULT_LIMIT_DISPLAY_MODE,
+            )
+        )
+        value = limit_display_percent(used, display_mode)
         detail = ""
         if window.resets_at is not None:
             now = datetime.now().astimezone()
@@ -1248,20 +1339,36 @@ class MainWindow(QMainWindow):
             minutes = remainder // 60
             countdown = f"{days}d {hours}h" if days else (f"{hours}h {minutes}m" if hours else f"{minutes}m")
             detail = f" · resets in {countdown}"
-            duration = 7 * 86_400 if "week" in window.label.lower() else (5 * 3_600 if "5" in window.label else 0)
-            elapsed = max(0, duration - seconds)
-            if duration and elapsed and 0 < used < 100:
-                eta = elapsed * (100 - used) / used
-                if eta < seconds:
-                    eta_hours = max(1, round(eta / 3_600))
-                    detail += f" · forecast full in ~{eta_hours}h"
-        title = QLabel(f"{provider} · {window.label} · {value:.0f}% {suffix}{detail}")
+            if settings_bool(
+                self.settings.value(
+                    FORECAST_ENABLED_KEY,
+                    DEFAULT_FORECAST_ENABLED,
+                ),
+                DEFAULT_FORECAST_ENABLED,
+            ):
+                forecast = limit_forecast(window, now)
+                if forecast is not None:
+                    if forecast.before_reset:
+                        detail += (
+                            " · forecast: full around "
+                            f"{forecast.depletion_at:%H:%M}"
+                        )
+                    else:
+                        detail += " · forecast: not expected before reset"
+        title = QLabel(
+            f"{provider} · {window.label} · "
+            f"{limit_percent_text(used, display_mode)}{detail}"
+        )
         title.setWordWrap(True)
         bar = QProgressBar()
         bar.setRange(0, 100)
         bar.setValue(round(value))
         bar.setTextVisible(False)
         bar.setFixedHeight(10)
+        bar.setToolTip(
+            f"{provider} {window.label}: "
+            f"{limit_percent_text(used, display_mode)}"
+        )
         warning = normalize_warning_threshold(
             self.settings.value(WARNING_THRESHOLD_KEY, DEFAULT_WARNING_THRESHOLD)
         )
@@ -1275,6 +1382,8 @@ class MainWindow(QMainWindow):
         return widget
 
     def _set_sprite(self, path: Path | None, *, egg: bool = False) -> None:
+        if self.reveal_timer.isActive():
+            self.reveal_timer.stop()
         if self.movie is not None:
             self.movie.stop()
             self.movie = None
@@ -1296,6 +1405,109 @@ class MainWindow(QMainWindow):
                 return
         self.sprite.setMovie(QMovie())
         self.sprite.setPixmap(_egg_pixmap(112) if egg else _pokeball_pixmap(112))
+
+    def start_companion_reveal(
+        self,
+        target_path: Path | None,
+        *,
+        is_egg: bool,
+        ball_path: Path | None = None,
+    ) -> None:
+        """Animate a runtime-fetched Poké Ball opening into the real companion."""
+        self.reveal_timer.stop()
+        if self.movie is not None:
+            self.movie.stop()
+            self.movie = None
+        ball = (
+            QPixmap(str(ball_path))
+            if ball_path is not None and ball_path.exists()
+            else QPixmap()
+        )
+        if ball.isNull():
+            ball = _pokeball_pixmap(64)
+        target = (
+            QPixmap(str(target_path))
+            if target_path is not None and target_path.exists()
+            else QPixmap()
+        )
+        if target.isNull():
+            target = _egg_pixmap(112) if is_egg else _pokeball_pixmap(112)
+        self.reveal_target_path = target_path
+        self.reveal_target_is_egg = is_egg
+        self.reveal_ball_pixmap = ball
+        self.reveal_target_pixmap = target
+        self.reveal_frame = 0
+        self._advance_companion_reveal()
+        self.reveal_timer.start()
+
+    def _advance_companion_reveal(self) -> None:
+        frame = self.reveal_frame
+        if frame >= 19:
+            self.reveal_timer.stop()
+            self._set_sprite(
+                self.reveal_target_path,
+                egg=self.reveal_target_is_egg,
+            )
+            return
+
+        canvas = QPixmap(112, 112)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+        if frame < 9:
+            offsets = (0, -6, 6, -5, 5, -3, 3, 0, 0)
+            ball_size = 54 + (4 if frame >= 7 else 0)
+            ball = self.reveal_ball_pixmap.scaled(
+                ball_size,
+                ball_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            x = (112 - ball.width()) // 2 + offsets[frame]
+            y = (112 - ball.height()) // 2 + 14
+            painter.drawPixmap(x, y, ball)
+            if frame >= 7:
+                flash_alpha = 90 if frame == 7 else 180
+                painter.setBrush(QColor(255, 248, 196, flash_alpha))
+                painter.setPen(Qt.PenStyle.NoPen)
+                radius = 24 + (frame - 7) * 18
+                painter.drawEllipse(
+                    56 - radius,
+                    56 - radius,
+                    radius * 2,
+                    radius * 2,
+                )
+        else:
+            progress = min(1.0, (frame - 9) / 9.0)
+            eased = 1.0 - (1.0 - progress) ** 3
+            painter.setBrush(QColor(255, 248, 196, round(150 * (1.0 - progress))))
+            painter.setPen(Qt.PenStyle.NoPen)
+            glow_radius = round(18 + 42 * progress)
+            painter.drawEllipse(
+                56 - glow_radius,
+                56 - glow_radius,
+                glow_radius * 2,
+                glow_radius * 2,
+            )
+            target_size = max(18, round(18 + 94 * eased))
+            target = self.reveal_target_pixmap.scaled(
+                target_size,
+                target_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            painter.setOpacity(max(0.15, progress))
+            painter.drawPixmap(
+                (112 - target.width()) // 2,
+                (112 - target.height()) // 2 - round(10 * (1.0 - progress)),
+                target,
+            )
+        painter.end()
+        self.sprite.setMovie(QMovie())
+        self.sprite.setPixmap(canvas)
+        self.reveal_frame += 1
 
     def _render_collection(self) -> None:
         _clear_layout(self.dex_grid)
@@ -1560,6 +1772,8 @@ class TrayController(QObject):
         self.refresh_running = False
         self.refresh_pending = False
         self.last_result: RefreshResult | None = None
+        self.window_open_pending = False
+        self.initial_reveal_played = False
         self.qa_capture_scheduled = False
         self.limit_alert_tiers: dict[str, int] = {}
         self.limit_notifications_enabled = settings_bool(
@@ -1579,6 +1793,12 @@ class TrayController(QObject):
         self.critical_threshold = normalize_critical_threshold(
             self.settings.value(CRITICAL_THRESHOLD_KEY, DEFAULT_CRITICAL_THRESHOLD)
         )
+        self.limit_display_mode = normalize_limit_display_mode(
+            self.settings.value(
+                LIMIT_DISPLAY_MODE_KEY,
+                DEFAULT_LIMIT_DISPLAY_MODE,
+            )
+        )
 
         self.window = MainWindow(self.state, self.settings, self.api)
         self.window.refresh_requested.connect(self._refresh_and_reschedule)
@@ -1593,7 +1813,7 @@ class TrayController(QObject):
         self._apply_theme()
 
         self.tray = QSystemTrayIcon(_pokeball_icon(), self)
-        self.tray.setToolTip(APP_NAME)
+        self.tray.setToolTip(f"{APP_NAME} · Loading usage and limits…")
         menu = QMenu()
         open_action = QAction("Open PokeTokenBar", self)
         open_action.triggered.connect(self.show_window)
@@ -1619,6 +1839,7 @@ class TrayController(QObject):
             self.show_window,
             warning_percent=self.warning_threshold,
             critical_percent=self.critical_threshold,
+            display_mode=self.limit_display_mode,
         )
         self.floating_pet.enabled_changed.connect(self._sync_pet_visibility)
         self.floating_pet.size_changed.connect(
@@ -1732,6 +1953,7 @@ class TrayController(QObject):
             show_tokens=self.settings.value("tray_show_tokens", True, type=bool),
             show_cost=self.settings.value("tray_show_cost", False, type=bool),
             show_limit=self.settings.value("tray_show_limit", True, type=bool),
+            limit_display_mode=self.limit_display_mode,
         )
         self.tray.setToolTip(tooltip)
 
@@ -1753,6 +1975,12 @@ class TrayController(QObject):
         self.critical_threshold = normalize_critical_threshold(
             self.settings.value(CRITICAL_THRESHOLD_KEY, DEFAULT_CRITICAL_THRESHOLD)
         )
+        self.limit_display_mode = normalize_limit_display_mode(
+            self.settings.value(
+                LIMIT_DISPLAY_MODE_KEY,
+                DEFAULT_LIMIT_DISPLAY_MODE,
+            )
+        )
         self.floating_pet.set_alerts_enabled(
             settings_bool(self.settings.value(PET_ALERTS_KEY, True), True)
         )
@@ -1760,6 +1988,7 @@ class TrayController(QObject):
             self.warning_threshold,
             self.critical_threshold,
         )
+        self.floating_pet.set_limit_display_mode(self.limit_display_mode)
         self.settings.sync()
         self._apply_theme()
         if self.last_result is not None:
@@ -1825,10 +2054,24 @@ class TrayController(QObject):
             QMessageBox.warning(self.window, "Import save", "This is not a valid PokeTokenBar save file.")
 
     def show_window(self) -> None:
+        if self.last_result is None:
+            self.window_open_pending = True
+            self.tray.setToolTip(f"{APP_NAME} · Loading usage and limits…")
+            return
+        self._present_window(animate_reveal=not self.initial_reveal_played)
+
+    def _present_window(self, *, animate_reveal: bool) -> None:
         self.window.show()
         apply_native_window_icon(int(self.window.winId()), cache_dir() / "app.ico")
         self.window.raise_()
         self.window.activateWindow()
+        if animate_reveal and self.last_result is not None:
+            self.initial_reveal_played = True
+            self.window.start_companion_reveal(
+                self.last_result.sprite_path,
+                is_egg=self.last_result.state.mon is None,
+                ball_path=self.last_result.reveal_ball_path,
+            )
 
     def refresh(self) -> None:
         if self.refresh_running:
@@ -1844,6 +2087,7 @@ class TrayController(QObject):
         try:
             snapshot, errors = scan_all()
             limits = fetch_all_limits()
+            reveal_ball = self.api.item_sprite_path("poke-ball")
             with self.state_lock:
                 candidate = copy.deepcopy(self.state)
                 delta = usage_delta(
@@ -1879,6 +2123,7 @@ class TrayController(QObject):
                 pet_sprite_path=pet_sprite,
                 pet_display_name=pet_display_name,
                 pet_is_egg=pet_subject.is_egg,
+                reveal_ball_path=reveal_ball,
             ))
         except Exception as exc:  # noqa: BLE001
             self.bridge.failed.emit(f"{type(exc).__name__}: {exc}")
@@ -1897,6 +2142,9 @@ class TrayController(QObject):
         self.last_result = result
         self.window.render(result)
         self._update_companion_surfaces(result)
+        if self.window_open_pending:
+            self.window_open_pending = False
+            self._present_window(animate_reveal=not self.initial_reveal_played)
         for event in result.events:
             if event.startswith("hatched:"):
                 shiny = bool(result.state.mon and result.state.mon.is_shiny)
@@ -1916,7 +2164,7 @@ class TrayController(QObject):
         if self.limit_notifications_enabled:
             for alert in limit_alerts:
                 provider = PROVIDER_LABELS.get(alert.provider, alert.provider.title())
-                title = "Limit imminent" if alert.severity == "critical" else "Limit warning"
+                title = "Critical limit" if alert.severity == "critical" else "Limit warning"
                 icon = (
                     QSystemTrayIcon.MessageIcon.Critical
                     if alert.severity == "critical"
@@ -1924,7 +2172,12 @@ class TrayController(QObject):
                 )
                 self.tray.showMessage(
                     title,
-                    f"{provider} {alert.window_label} at {alert.used_percent:.0f}%",
+                    limit_alert_body(
+                        provider,
+                        alert.window_label,
+                        alert.used_percent,
+                        self.limit_display_mode,
+                    ),
                     icon,
                     6_000,
                 )
@@ -1997,6 +2250,8 @@ class TrayController(QObject):
         self.window.refresh_button.setEnabled(True)
         self.window.refresh_status.setText("Update failed · retry scheduled")
         self.window.statusBar().showMessage("Update failed; existing data is still shown", 7000)
+        if self.last_result is None:
+            self.tray.setToolTip(f"{APP_NAME} · Initial load failed · retrying…")
         self.tray.showMessage(
             "PokeTokenBar could not refresh",
             "Some local usage data could not be read. PokeTokenBar will try again automatically.",

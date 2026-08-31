@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QSettings, Qt
-from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QScrollArea
 
 from poketokenbar_windows.models import (
     LimitWindow,
@@ -72,6 +72,7 @@ class UITests(unittest.TestCase):
         self.settings.setValue("limit_critical", 97)
         self.settings.setValue("notify_events", False)
         self.settings.setValue("warnThreshold", 90)
+        self.settings.setValue("limits_show_remaining", True)
 
         _migrate_legacy_settings(self.settings)
 
@@ -81,6 +82,7 @@ class UITests(unittest.TestCase):
         self.assertEqual(self.settings.value("warnThreshold", type=int), 90)
         self.assertEqual(self.settings.value("critThreshold", type=int), 95)
         self.assertFalse(self.settings.value("companionNotifications", type=bool))
+        self.assertEqual(self.settings.value("limit_display_mode"), "remaining")
 
     def test_provider_tabs_only_appear_for_multiple_providers(self):
         window = self._window()
@@ -98,12 +100,12 @@ class UITests(unittest.TestCase):
         window.render(RefreshResult(two, {}, {}, state, [], None, "Pokemon Egg"))
         self.assertEqual(window.providers_tabs.count(), 3)
 
-    def test_companion_percentage_is_readable_above_the_thin_bar(self):
+    def test_companion_level_is_readable_above_the_thin_bar(self):
         window = self._window()
         state = GameState(egg_usage=EGG_HATCH_THRESHOLD // 2)
         snapshot = UsageSnapshot(scanned_at=datetime.now(timezone.utc))
         window.render(RefreshResult(snapshot, {}, {}, state, [], None, "Pokemon Egg"))
-        self.assertEqual(window.progress_percent_label.text(), "50%")
+        self.assertEqual(window.progress_percent_label.text(), "Lv. 50")
         self.assertFalse(window.progress.isTextVisible())
         self.assertEqual(window.progress.height(), 12)
 
@@ -144,6 +146,68 @@ class UITests(unittest.TestCase):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
         )
 
+    def test_limit_widget_and_tray_share_remaining_mode_and_forecast_setting(self):
+        self.settings.setValue("limit_display_mode", "remaining")
+        reset = datetime.now(timezone.utc) + timedelta(hours=2)
+        limits = {
+            "codex": ProviderLimits(
+                "codex",
+                windows=[LimitWindow("5-hour", 75, reset, duration_minutes=300)],
+            )
+        }
+        snapshot = UsageSnapshot(
+            providers={"codex": ProviderUsage("codex", today_tokens=1_500_000)},
+            scanned_at=datetime.now(timezone.utc),
+        )
+        result = RefreshResult(
+            snapshot,
+            limits,
+            {},
+            GameState(),
+            [],
+            None,
+            "Pokemon Egg",
+        )
+        window = self._window()
+        window.render(result)
+        widget = window.limits_list.itemWidget(window.limits_list.item(0))
+        title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
+        self.assertIn("25% remaining", title)
+        self.assertIn("forecast: full around", title)
+
+        tooltip = tray_tooltip(result, limit_display_mode="remaining")
+        self.assertIn("Codex 5-hour: 25% remaining", tooltip)
+        self.assertIn("Lv. 0", tooltip)
+        self.assertNotIn("% progress", tooltip)
+
+        self.settings.setValue("limits_forecast_enabled", False)
+        window.render(result)
+        widget = window.limits_list.itemWidget(window.limits_list.item(0))
+        title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
+        self.assertNotIn("forecast:", title)
+
+    def test_initial_window_waits_for_real_refresh_data(self):
+        controller = TrayController.__new__(TrayController)
+        controller.last_result = None
+        controller.window_open_pending = False
+        controller.window = Mock()
+        controller.tray = Mock()
+
+        controller.show_window()
+
+        self.assertTrue(controller.window_open_pending)
+        controller.window.show.assert_not_called()
+        self.assertIn("Loading", controller.tray.setToolTip.call_args.args[0])
+
+    def test_companion_reveal_finishes_on_the_real_sprite(self):
+        window = self._window()
+        window.start_companion_reveal(None, is_egg=True)
+        self.assertTrue(window.reveal_timer.isActive())
+        window.reveal_frame = 19
+        window._advance_companion_reveal()
+        self.assertFalse(window.reveal_timer.isActive())
+        self.assertFalse(window.sprite.pixmap().isNull())
+
     def test_collection_has_counts_paging_and_representative_choice(self):
         catches = [CatchRecord(3, 1, [1, 2, 3], "rare", True, "Bold", "2026-08-30T10:00:00")]
         window = self._window(GameState(catches=catches))
@@ -176,7 +240,7 @@ class UITests(unittest.TestCase):
         self.app.processEvents()
         QApplication.sendEvent(pet, QEvent(QEvent.Type.Enter))
         self.assertTrue(pet.progress_overlay.isVisible())
-        self.assertEqual(pet.progress_overlay.text(), "Next evolution · 47%")
+        self.assertEqual(pet.progress_overlay.text(), "Next evolution · Lv. 47")
         QApplication.sendEvent(pet, QEvent(QEvent.Type.Leave))
         self.assertFalse(pet.progress_overlay.isVisible())
         pet.close()

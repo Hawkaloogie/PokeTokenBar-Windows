@@ -49,9 +49,8 @@ def main() -> int:
     app.setQuitOnLastWindowClosed(False)
 
     controller = TrayController(app)
-    # Show the main window on an interactive launch. The tray icon remains
-    # available after the window is closed, but users should not have to find
-    # the notification-area icon before they can use the app for the first time.
+    # Request the main window on an interactive launch. TrayController defers
+    # the actual show until the first real usage/limit snapshot is rendered.
     controller.show_window()
 
     app._poketokenbar_controller = controller  # keep QObject graph alive
