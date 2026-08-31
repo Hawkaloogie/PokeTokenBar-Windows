@@ -7,8 +7,8 @@ A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/P
 ## What works
 
 - Windows 10/11 notification-area tray icon + Qt/PySide6 window, with current companion and stage progress in the tray tooltip and a right-click toggle for the floating pet
-- Opt-in interactive floating desktop pet: animated egg/Pokemon, 48–192 px sizing, drag-and-drop position persistence, hover usage/official-limit callout, click-to-open, context-menu hide, and transient limit/full-reset bubbles
-- Optional owned representative Pokemon for the desktop pet, independent of the actively progressing companion and preserving shiny variants
+- Opt-in interactive floating desktop pet: animated egg/Pokemon, 48–192 px sizing, drag-and-drop position persistence, hover fields shared with the tray, click-to-open, a context menu matching the tray, and transient limit/full-reset bubbles
+- Optional owned representative Pokemon for the desktop pet, independent of the actively progressing companion and preserving shiny variants; returning to Follow current companion switches immediately to the active egg/Pokemon
 - Configurable Windows balloon/toast-style notifications: deduplicated official-limit warnings (80% warning and 95% critical by default) plus an independent toggle for hatch/evolution/graduation/Rare Candy events
 - Animated Gen-V Pokemon sprites with static fallback, fetched and cached at runtime
 - Egg -> hatch -> real evolution path -> graduation progression
@@ -17,7 +17,11 @@ A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/P
 - Bag and token shop: Rare Candy, Mint, Shiny Charm, normal/Uncommon/Rare eggs
 - Separate Home, Collection, Bag, Shop, and Settings areas; paged Pokédex, Shiny sprite toggle, catch history, evolution line, and short in-app celebrations
 - Configurable light/dark/system theme, refresh interval, limit thresholds, used/remaining percentages, tray fields, notifications, Pokémon-name language, and save import/export
-- Official-limit progress bars with reset countdowns, simple depletion forecasts, stale/error states, deduplicated warning/critical alerts, and Codex Luna Reserve below the headline 5-hour/weekly limits
+- One upstream-style segmented Used/Remaining selector shared by Home, tray, and desktop-pet hover; compact surfaces use "left", Home gauges follow the selected mode, while warning/critical copy, thresholds, rewards, and risk colors always mean quota used
+- A shared Time left/Date & time selector keeps resets, depletion forecasts, reset-credit expiry and related warnings in one consistent temporal format; countdown forecasts retain the compact "full in ~2h" style, while absolute values use a short date and time
+- Optional timed-limit depletion forecasts with explicit insufficient-data states; Codex Luna Reserve stays visible in Home (as unavailable when Codex omits that bucket) but only replaces the regular allowance on tray/hover after regular usage is exhausted
+- Pokémon-style companion progress shown consistently as `Lv. 0`–`Lv. 100`
+- Deferred first window: real usage and limit data is rendered before the UI appears, followed by a Poké Ball reveal in both the main window and floating pet using a runtime-fetched PokeAPI item sprite with a drawn fallback; later representative changes use the same Poké Ball transition instead of a generic loader
 - Edge-triggered Rare Candy rewards when an official time window reaches 100%, with upstream-compatible first-snapshot seeding and stable identities that ignore one-second reset-time drift
 - Install-time usage baseline: pre-install usage is never retroactively converted into growth or shop currency
 - Collection/catch history and persistent state under `%APPDATA%\PokeTokenBar-Windows`
@@ -35,7 +39,7 @@ Only one egg or companion is raised at a time; previously reached species remain
 - **Mint** costs 100M and rerolls the active companion's cosmetic nature.
 - **Shiny Charm** costs 3B, is permanent, and improves future hatch odds from 1/64 to 1/48; it is not retroactive.
 
-The default automatic refresh is every five minutes. Each refresh scans local usage **and** fetches official limits before applying growth, alerts, and Rare Candy rewards.
+The default automatic refresh is every five minutes. Each refresh scans local usage **and** fetches official limits before applying growth, alerts, and Rare Candy rewards. On startup the main window and optional desktop pet stay hidden until this first real snapshot is ready.
 
 ## Install
 
@@ -104,7 +108,7 @@ The existing provider environment variables above are honored. The port also sup
 Token logs are parsed locally. Outbound requests are limited to functionality that needs them:
 
 - `pokeapi.co` for species/evolution metadata
-- `raw.githubusercontent.com/PokeAPI/sprites` for sprites
+- `raw.githubusercontent.com/PokeAPI/sprites` for Pokémon, egg, and Poké Ball item sprites
 - `api.anthropic.com` for Claude official limits
 - `cursor.com` for Cursor usage when local bubble token counts are zero (uses the existing Cursor IDE login; disable with `CURSOR_USAGE_API=0`)
 

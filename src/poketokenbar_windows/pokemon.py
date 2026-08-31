@@ -238,3 +238,29 @@ class PokeAPIClient:
             return path
         except (OSError, urllib.error.URLError, TimeoutError):
             return None
+
+    def item_sprite_path(self, item_name: str) -> Path | None:
+        """Fetch a static PokeAPI item sprite without bundling third-party art."""
+        normalized = item_name.strip().lower()
+        if not re.fullmatch(r"[a-z0-9-]+", normalized):
+            raise ValueError("Invalid PokeAPI item name")
+        path = self.sprite_dir / f"item-{normalized}.png"
+        if path.exists() and path.stat().st_size > 0:
+            return path
+        url = (
+            "https://raw.githubusercontent.com/PokeAPI/sprites/master/"
+            f"sprites/items/{normalized}.png"
+        )
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={"User-Agent": "PokeTokenBar-Windows/0.1"},
+            )
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                blob = response.read()
+            if not blob:
+                return None
+            path.write_bytes(blob)
+            return path
+        except (OSError, urllib.error.URLError, TimeoutError):
+            return None
