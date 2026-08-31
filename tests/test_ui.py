@@ -337,8 +337,13 @@ class UITests(unittest.TestCase):
         )
         hover.set_text(text)
         self.assertEqual(hover.label.width(), expected_width)
-        self.assertLessEqual(hover.width(), hover.label.width() + 22)
+        hover.show()
+        self.app.processEvents()
+        self.assertGreaterEqual(hover.label.geometry().x(), 5)
+        self.assertLessEqual(hover.width(), hover.label.width() + 12)
         self.assertLess(hover.height(), 60)
+        image = hover.grab().toImage()
+        self.assertGreater(image.pixelColor(2, image.height() // 2).alpha(), 0)
         hover.close()
 
     def test_severely_shrunken_animation_frame_keeps_last_normal_frame(self):

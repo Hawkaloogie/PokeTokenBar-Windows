@@ -525,14 +525,32 @@ class _CalloutBase(QFrame):
 class HoverCallout(_CalloutBase):
     def __init__(self):
         super().__init__()
+        self.setObjectName("HoverCallout")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            "QFrame#HoverCallout { background: #fffdf9; border: 1px solid #d8d2c8; "
+            "border-radius: 4px; } "
+            "QLabel#HoverCalloutText { background: transparent; border: none; "
+            "color: #26221d; }"
+        )
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setContentsMargins(5, 3, 5, 3)
         self.label = QLabel()
         self.label.setObjectName("HoverCalloutText")
-        self.label.setStyleSheet("border: none; color: #26221d;")
+        self.label.setStyleSheet(
+            "background: transparent; border: none; color: #26221d;"
+        )
         self.label.setWordWrap(True)
         self.label.setMaximumWidth(280)
         layout.addWidget(self.label)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor("#fffdf9"))
+        painter.setPen(QPen(QColor("#d8d2c8"), 1))
+        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 4, 4)
+        painter.end()
 
     def set_text(self, text: str) -> None:
         self.label.setText(text)
