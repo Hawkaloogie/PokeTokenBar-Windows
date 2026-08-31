@@ -67,9 +67,13 @@ def limit_display_percent(
 def limit_percent_text(
     used_percent: float,
     mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
+    *,
+    compact: bool = False,
 ) -> str:
     normalized = normalize_limit_display_mode(mode)
-    suffix = "remaining" if normalized == "remaining" else "used"
+    suffix = "left" if compact and normalized == "remaining" else (
+        "remaining" if normalized == "remaining" else "used"
+    )
     return f"{limit_display_percent(used_percent, normalized):.0f}% {suffix}"
 
 
@@ -79,18 +83,42 @@ def limit_alert_body(
     used_percent: float,
     mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
 ) -> str:
-    normalized = normalize_limit_display_mode(mode)
-    shown = limit_percent_text(used_percent, normalized)
-    if normalized == "remaining":
-        return f"{provider_label} {window_label}: {shown} ({limit_percent_text(used_percent, 'used')})."
-    return f"{provider_label} {window_label}: {shown}."
+    # Alert semantics stay anchored to utilization regardless of the display
+    # preference. This matches upstream and keeps warning thresholds unambiguous.
+    return f"{provider_label} {window_label}: {limit_percent_text(used_percent, 'used')}."
+
+
+def _is_reserve_window(window: LimitWindow) -> bool:
+    identifier = (window.identifier or "").lower().replace("-", "_")
+    label = window.label.lower()
+    return identifier.startswith("base_model_inference") or "reserve" in label
+
+
+def _compact_candidate_windows(status: ProviderLimits) -> list[LimitWindow]:
+    windows = [window for window in status.windows if "spend" not in window.label.lower()]
+    if status.provider.lower() != "codex":
+        return windows
+
+    regular = [window for window in windows if not _is_reserve_window(window)]
+    reserve = [window for window in windows if _is_reserve_window(window)]
+    if not reserve:
+        return regular
+    if not regular:
+        return reserve
+
+    # Luna Reserve is a fallback allowance. Surface it on compact views only
+    # after regular Codex usage is exhausted (or the server says it is active).
+    regular_exhausted = status.reserve_active or any(
+        float(window.used_percent) >= 100.0 for window in regular
+    )
+    return reserve if regular_exhausted else regular
 
 
 def highest_relevant_limit(
     snapshot: UsageSnapshot,
     limits_by_provider: Mapping[str, ProviderLimits],
 ) -> tuple[str, LimitWindow] | None:
-    """Pick the most-used non-spend limit from providers used today."""
+    """Pick the active, most-used non-spend limit from providers used today."""
     active = {
         provider
         for provider, usage in snapshot.providers.items()
@@ -98,11 +126,9 @@ def highest_relevant_limit(
     }
     candidates: list[tuple[float, float, str, LimitWindow]] = []
     for provider, status in limits_by_provider.items():
-        if active and provider not in active:
+        if provider not in active:
             continue
-        for window in status.windows:
-            if "spend" in window.label.lower():
-                continue
+        for window in _compact_candidate_windows(status):
             reset = window.resets_at.timestamp() if window.resets_at is not None else float("inf")
             candidates.append((float(window.used_percent), -reset, provider, window))
     if not candidates:
@@ -115,14 +141,12 @@ def limit_forecast(
     window: LimitWindow,
     now: datetime | None = None,
 ) -> LimitForecast | None:
-    """Extrapolate a 5-hour window from average utilization since its start."""
+    """Extrapolate a timed window from average utilization since its start."""
     reset = window.resets_at
     if reset is None:
         return None
     duration_minutes = window.duration_minutes
-    if duration_minutes is None and "5-hour" in window.label.lower():
-        duration_minutes = 300
-    if duration_minutes != 300:
+    if duration_minutes is None:
         return None
 
     current = _now_for(reset, now)
@@ -131,12 +155,36 @@ def limit_forecast(
     elapsed_seconds = duration_seconds - remaining_seconds
     used = max(0.0, min(100.0, float(window.used_percent)))
     # Match upstream's 5% stability floor and require a meaningful observed slice.
-    if used < 5 or used >= 100 or elapsed_seconds < 60 or remaining_seconds <= 0:
+    if used >= 100:
+        return LimitForecast(depletion_at=current, before_reset=True)
+    if used < 5 or elapsed_seconds < 60 or remaining_seconds <= 0:
         return None
     seconds_per_percent = elapsed_seconds / used
     seconds_to_full = (100.0 - used) * seconds_per_percent
     depletion_at = current + timedelta(seconds=seconds_to_full)
     return LimitForecast(depletion_at=depletion_at, before_reset=depletion_at < reset)
+
+
+def limit_forecast_unavailable_reason(
+    window: LimitWindow,
+    now: datetime | None = None,
+) -> str | None:
+    """Explain why a requested forecast cannot currently be shown."""
+    reset = window.resets_at
+    if reset is None:
+        return "reset time unavailable"
+    if window.duration_minutes is None:
+        return "window duration unavailable"
+    current = _now_for(reset, now)
+    if (reset - current).total_seconds() <= 0:
+        return "window already reset"
+    used = max(0.0, min(100.0, float(window.used_percent)))
+    if used < 5:
+        return "not enough data yet (<5% used)"
+    elapsed_seconds = window.duration_minutes * 60 - (reset - current).total_seconds()
+    if elapsed_seconds < 60:
+        return "collecting usage data"
+    return None
 
 
 def format_limit_datetime(value: datetime) -> str:

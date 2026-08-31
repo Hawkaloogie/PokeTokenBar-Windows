@@ -24,6 +24,7 @@ from poketokenbar_windows.formatting import (
     format_limit_datetime,
     limit_alert_body,
     limit_forecast,
+    limit_forecast_unavailable_reason,
     limit_percent_text,
     limit_reset_summary,
     limit_reset_tray_warning,
@@ -565,12 +566,13 @@ class FormattingTests(unittest.TestCase):
         self.assertEqual(normalize_limit_display_mode("remaining"), "remaining")
         self.assertEqual(limit_percent_text(75, "used"), "75% used")
         self.assertEqual(limit_percent_text(75, "remaining"), "25% remaining")
+        self.assertEqual(limit_percent_text(75, "remaining", compact=True), "25% left")
         self.assertEqual(
             limit_alert_body("Codex", "Weekly", 95, "remaining"),
-            "Codex Weekly: 5% remaining (95% used).",
+            "Codex Weekly: 95% used.",
         )
 
-    def test_five_hour_forecast_extrapolates_average_window_utilization(self):
+    def test_timed_limit_forecast_extrapolates_average_window_utilization(self):
         now = datetime(2026, 8, 31, 10, 0, tzinfo=timezone.utc)
         fast = LimitWindow(
             "5-hour",
@@ -597,6 +599,20 @@ class FormattingTests(unittest.TestCase):
             duration_minutes=300,
         )
         self.assertIsNone(limit_forecast(unstable, now))
+        self.assertEqual(
+            limit_forecast_unavailable_reason(unstable, now),
+            "not enough data yet (<5% used)",
+        )
+
+        weekly = LimitWindow(
+            "Weekly",
+            60,
+            now + timedelta(days=3),
+            duration_minutes=10_080,
+        )
+        weekly_forecast = limit_forecast(weekly, now)
+        self.assertIsNotNone(weekly_forecast)
+        self.assertTrue(weekly_forecast.before_reset)
 
     def test_limit_dates_include_weekday_and_calendar_date(self):
         self.assertEqual(

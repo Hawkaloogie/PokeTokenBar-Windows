@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QSettings, Qt
-from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QScrollArea
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QProgressBar, QScrollArea
 
 from poketokenbar_windows.models import (
     LimitWindow,
@@ -20,6 +20,7 @@ from poketokenbar_windows.models import (
     UsageSnapshot,
 )
 from poketokenbar_windows.pokemon import EGG_HATCH_THRESHOLD, RARE_CANDY_XP
+from poketokenbar_windows.floating_pet import FloatingPetWindow
 from poketokenbar_windows.state import CatchRecord, GameState, MonState
 from poketokenbar_windows.ui import (
     DesktopPet,
@@ -174,9 +175,10 @@ class UITests(unittest.TestCase):
         title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
         self.assertIn("25% remaining", title)
         self.assertIn("forecast: full around", title)
+        self.assertEqual(widget.findChild(QProgressBar).value(), 75)
 
         tooltip = tray_tooltip(result, limit_display_mode="remaining")
-        self.assertIn("Codex 5-hour: 25% remaining", tooltip)
+        self.assertIn("Codex 5-hour: 25% left", tooltip)
         self.assertIn("Lv. 0", tooltip)
         self.assertNotIn("% progress", tooltip)
 
@@ -185,6 +187,48 @@ class UITests(unittest.TestCase):
         widget = window.limits_list.itemWidget(window.limits_list.item(0))
         title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
         self.assertNotIn("forecast:", title)
+
+    def test_limit_display_uses_upstream_style_segmented_toggle(self):
+        window = self._window()
+        self.assertTrue(window.limit_used_button.isChecked())
+        self.assertFalse(window.limit_remaining_button.isChecked())
+
+        window.limit_remaining_button.click()
+
+        self.assertTrue(window.limit_remaining_button.isChecked())
+        self.assertEqual(self.settings.value("limit_display_mode"), "remaining")
+
+    def test_forecast_explains_when_there_is_not_enough_data(self):
+        self.settings.setValue("limits_forecast_enabled", True)
+        now = datetime.now(timezone.utc)
+        limits = {
+            "codex": ProviderLimits(
+                "codex",
+                windows=[
+                    LimitWindow(
+                        "Weekly",
+                        4,
+                        now + timedelta(days=3),
+                        duration_minutes=10_080,
+                    )
+                ],
+            )
+        }
+        window = self._window()
+        window.render(
+            RefreshResult(
+                UsageSnapshot(scanned_at=now),
+                limits,
+                {},
+                GameState(),
+                [],
+                None,
+                "Pokemon Egg",
+            )
+        )
+        widget = window.limits_list.itemWidget(window.limits_list.item(0))
+        title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
+        self.assertIn("forecast: not enough data yet", title)
 
     def test_initial_window_waits_for_real_refresh_data(self):
         controller = TrayController.__new__(TrayController)
@@ -207,6 +251,16 @@ class UITests(unittest.TestCase):
         window._advance_companion_reveal()
         self.assertFalse(window.reveal_timer.isActive())
         self.assertFalse(window.sprite.pixmap().isNull())
+
+    def test_floating_pet_plays_the_same_companion_reveal(self):
+        pet = FloatingPetWindow(96)
+        pet.start_companion_reveal(None, is_egg=True)
+        self.assertTrue(pet.reveal_timer.isActive())
+        pet.reveal_frame = 19
+        pet._advance_companion_reveal()
+        self.assertFalse(pet.reveal_timer.isActive())
+        self.assertFalse(pet.label.pixmap().isNull())
+        pet.close()
 
     def test_collection_has_counts_paging_and_representative_choice(self):
         catches = [CatchRecord(3, 1, [1, 2, 3], "rare", True, "Bold", "2026-08-30T10:00:00")]

@@ -16,6 +16,7 @@ from .formatting import (
     limit_percent_text,
     limit_reset_expiry,
     limit_reset_urgency,
+    money,
 )
 from .models import ProviderLimits, UsageSnapshot
 
@@ -283,25 +284,35 @@ def pet_hover_text(
     snapshot: UsageSnapshot,
     limits_by_provider: Mapping[str, ProviderLimits],
     display_mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
+    *,
+    show_tokens: bool = True,
+    show_cost: bool = False,
+    show_limit: bool = True,
 ) -> str:
-    lines = [f"{compact_tokens(snapshot.today_tokens)} tokens today"]
-    selected = highest_relevant_limit(snapshot, limits_by_provider)
-    if selected is not None:
-        provider, window = selected
-        lines.append(
-            f"{provider.title()} {window.label}: "
-            f"{limit_percent_text(window.used_percent, display_mode)}"
-        )
+    lines: list[str] = []
+    if show_tokens:
+        lines.append(f"{compact_tokens(snapshot.today_tokens)} tokens today")
+    if show_cost:
+        lines.append(f"{money(snapshot.today_cost)} estimated cost today")
+    if show_limit:
+        selected = highest_relevant_limit(snapshot, limits_by_provider)
+        if selected is not None:
+            provider, window = selected
+            lines.append(
+                f"{provider.title()} {window.label}: "
+                f"{limit_percent_text(window.used_percent, display_mode, compact=True)}"
+            )
 
     reset_warnings: list[tuple[float, str]] = []
-    for provider, status in limits_by_provider.items():
-        urgency = limit_reset_urgency(status)
-        expiry = limit_reset_expiry(status)
-        if urgency != "neutral" and expiry is not None:
-            marker = "Critical" if urgency == "critical" else "Warning"
-            reset_warnings.append(
-                (expiry.timestamp(), f"{marker}: {provider.title()} full reset expires {format_limit_datetime(expiry)}")
-            )
+    if show_limit:
+        for provider, status in limits_by_provider.items():
+            urgency = limit_reset_urgency(status)
+            expiry = limit_reset_expiry(status)
+            if urgency != "neutral" and expiry is not None:
+                marker = "Critical" if urgency == "critical" else "Warning"
+                reset_warnings.append(
+                    (expiry.timestamp(), f"{marker}: {provider.title()} full reset expires {format_limit_datetime(expiry)}")
+                )
     if reset_warnings:
         lines.append(min(reset_warnings, key=lambda item: item[0])[1])
     return "\n".join(lines)

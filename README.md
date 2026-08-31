@@ -7,7 +7,7 @@ A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/P
 ## What works
 
 - Windows 10/11 notification-area tray icon + Qt/PySide6 window, with current companion and stage progress in the tray tooltip and a right-click toggle for the floating pet
-- Opt-in interactive floating desktop pet: animated egg/Pokemon, 48–192 px sizing, drag-and-drop position persistence, hover usage/official-limit callout, click-to-open, context-menu hide, and transient limit/full-reset bubbles
+- Opt-in interactive floating desktop pet: animated egg/Pokemon, 48–192 px sizing, drag-and-drop position persistence, hover fields shared with the tray, click-to-open, context-menu refresh/hide/quit, and transient limit/full-reset bubbles
 - Optional owned representative Pokemon for the desktop pet, independent of the actively progressing companion and preserving shiny variants
 - Configurable Windows balloon/toast-style notifications: deduplicated official-limit warnings (80% warning and 95% critical by default) plus an independent toggle for hatch/evolution/graduation/Rare Candy events
 - Animated Gen-V Pokemon sprites with static fallback, fetched and cached at runtime
@@ -17,10 +17,10 @@ A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/P
 - Bag and token shop: Rare Candy, Mint, Shiny Charm, normal/Uncommon/Rare eggs
 - Separate Home, Collection, Bag, Shop, and Settings areas; paged Pokédex, Shiny sprite toggle, catch history, evolution line, and short in-app celebrations
 - Configurable light/dark/system theme, refresh interval, limit thresholds, used/remaining percentages, tray fields, notifications, Pokémon-name language, and save import/export
-- One explicit Used/Remaining selector shared by Home, tray, desktop-pet hover, and limit alerts; alert thresholds remain clearly defined as quota used
-- Optional 5-hour depletion forecasts with reset countdowns, stale/error states, deduplicated warning/critical alerts, and Codex Luna Reserve below the headline 5-hour/weekly limits
+- One upstream-style segmented Used/Remaining selector shared by Home, tray, and desktop-pet hover; compact surfaces use "left", while gauges, warning/critical copy, thresholds, rewards, and colors always mean quota used
+- Optional timed-limit depletion forecasts with reset countdowns and explicit insufficient-data states; Codex Luna Reserve stays visible in Home but only replaces the regular allowance on tray/hover after regular usage is exhausted
 - Pokémon-style companion progress shown consistently as `Lv. 0`–`Lv. 100`
-- Deferred first window: real usage and limit data is rendered before the UI appears, followed by a Poké Ball reveal using a runtime-fetched PokeAPI item sprite with a drawn fallback
+- Deferred first window: real usage and limit data is rendered before the UI appears, followed by a Poké Ball reveal in both the main window and floating pet using a runtime-fetched PokeAPI item sprite with a drawn fallback
 - Edge-triggered Rare Candy rewards when an official time window reaches 100%, with upstream-compatible first-snapshot seeding and stable identities that ignore one-second reset-time drift
 - Install-time usage baseline: pre-install usage is never retroactively converted into growth or shop currency
 - Collection/catch history and persistent state under `%APPDATA%\PokeTokenBar-Windows`

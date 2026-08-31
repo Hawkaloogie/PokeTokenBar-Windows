@@ -36,6 +36,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -71,8 +72,8 @@ from .formatting import (
     compact_tokens,
     highest_relevant_limit,
     limit_alert_body,
-    limit_display_percent,
     limit_forecast,
+    limit_forecast_unavailable_reason,
     limit_percent_text,
     limit_reset_expiry,
     limit_reset_tray_warning,
@@ -222,9 +223,9 @@ def tray_tooltip(
             provider, window = selected
             parts.append(
                 f"{provider.title()} {window.label}: "
-                f"{limit_percent_text(window.used_percent, limit_display_mode)}"
+                f"{limit_percent_text(window.used_percent, limit_display_mode, compact=True)}"
             )
-    if warnings:
+    if show_limit and warnings:
         parts.append(min(warnings, key=lambda item: item[0])[1])
     return f"{APP_NAME} · {' · '.join(parts)}"
 
@@ -991,25 +992,63 @@ class MainWindow(QMainWindow):
         limits_layout = QVBoxLayout(limits_group)
         display_row = QHBoxLayout()
         display_row.addWidget(QLabel("Display official limits as"))
-        self.limit_display_combo = QComboBox()
-        self.limit_display_combo.addItem("Used · quota consumed", "used")
-        self.limit_display_combo.addItem("Remaining · quota left", "remaining")
         display_mode = normalize_limit_display_mode(
             self.settings.value(
                 LIMIT_DISPLAY_MODE_KEY,
                 DEFAULT_LIMIT_DISPLAY_MODE,
             )
         )
-        self.limit_display_combo.setCurrentIndex(
-            max(0, self.limit_display_combo.findData(display_mode))
-        )
-        self.limit_display_combo.currentIndexChanged.connect(
-            lambda: self._save_preference(
+        self.limit_display_toggle = QFrame()
+        self.limit_display_toggle.setObjectName("LimitModeToggle")
+        toggle_layout = QHBoxLayout(self.limit_display_toggle)
+        toggle_layout.setContentsMargins(0, 0, 0, 0)
+        toggle_layout.setSpacing(0)
+        self.limit_display_group = QButtonGroup(self.limit_display_toggle)
+        self.limit_display_group.setExclusive(True)
+        self.limit_used_button = QPushButton("Used")
+        self.limit_remaining_button = QPushButton("Remaining")
+        for button, mode in (
+            (self.limit_used_button, "used"),
+            (self.limit_remaining_button, "remaining"),
+        ):
+            button.setObjectName(
+                "LimitModeUsedSegment" if mode == "used" else "LimitModeRemainingSegment"
+            )
+            button.setProperty("limitModeSegment", True)
+            button.setCheckable(True)
+            button.setProperty("limitMode", mode)
+            button.setFixedWidth(112)
+            button.setToolTip(
+                "Show quota consumed" if mode == "used" else "Show quota left"
+            )
+            self.limit_display_group.addButton(button)
+            toggle_layout.addWidget(button)
+        self.limit_used_button.setChecked(display_mode == "used")
+        self.limit_remaining_button.setChecked(display_mode == "remaining")
+        self.limit_display_group.buttonClicked.connect(
+            lambda button: self._save_preference(
                 LIMIT_DISPLAY_MODE_KEY,
-                str(self.limit_display_combo.currentData()),
+                str(button.property("limitMode")),
             )
         )
-        display_row.addWidget(self.limit_display_combo)
+        self.limit_display_toggle.setStyleSheet(
+            "QPushButton[limitModeSegment='true'] {"
+            "  border: 1px solid palette(mid); padding: 5px 12px; margin: 0;"
+            "  background: palette(button);"
+            "}"
+            "QPushButton#LimitModeUsedSegment {"
+            "  border-top-left-radius: 6px; border-bottom-left-radius: 6px;"
+            "  border-right-width: 0;"
+            "}"
+            "QPushButton#LimitModeRemainingSegment {"
+            "  border-top-right-radius: 6px; border-bottom-right-radius: 6px;"
+            "}"
+            "QPushButton[limitModeSegment='true']:checked {"
+            "  background: #2563eb; color: white; border-color: #2563eb;"
+            "  font-weight: 600;"
+            "}"
+        )
+        display_row.addWidget(self.limit_display_toggle)
         display_row.addStretch(1)
         limits_layout.addLayout(display_row)
         display_hint = QLabel(
@@ -1020,13 +1059,13 @@ class MainWindow(QMainWindow):
         display_hint.setStyleSheet("color: #6b7280;")
         limits_layout.addWidget(display_hint)
         self.forecast_check = self._setting_check(
-            "Show 5-hour depletion forecast",
+            "Show depletion forecast for timed limits",
             FORECAST_ENABLED_KEY,
             DEFAULT_FORECAST_ENABLED,
         )
         self.forecast_check.setToolTip(
-            "Uses the average quota consumption since the current 5-hour window began "
-            "to estimate whether it will reach 100% before reset."
+            "Uses average quota consumption since each known window began. "
+            "When a forecast cannot be calculated, the limit row explains why."
         )
         limits_layout.addWidget(self.forecast_check)
         self.limit_notifications_check = self._setting_check(
@@ -1324,10 +1363,9 @@ class MainWindow(QMainWindow):
                 DEFAULT_LIMIT_DISPLAY_MODE,
             )
         )
-        value = limit_display_percent(used, display_mode)
         detail = ""
+        now = datetime.now().astimezone()
         if window.resets_at is not None:
-            now = datetime.now().astimezone()
             reset = window.resets_at
             if reset.tzinfo is None:
                 now = now.replace(tzinfo=None)
@@ -1339,22 +1377,26 @@ class MainWindow(QMainWindow):
             minutes = remainder // 60
             countdown = f"{days}d {hours}h" if days else (f"{hours}h {minutes}m" if hours else f"{minutes}m")
             detail = f" · resets in {countdown}"
-            if settings_bool(
-                self.settings.value(
-                    FORECAST_ENABLED_KEY,
-                    DEFAULT_FORECAST_ENABLED,
-                ),
+        if settings_bool(
+            self.settings.value(
+                FORECAST_ENABLED_KEY,
                 DEFAULT_FORECAST_ENABLED,
-            ):
-                forecast = limit_forecast(window, now)
-                if forecast is not None:
-                    if forecast.before_reset:
-                        detail += (
-                            " · forecast: full around "
-                            f"{forecast.depletion_at:%H:%M}"
-                        )
-                    else:
-                        detail += " · forecast: not expected before reset"
+            ),
+            DEFAULT_FORECAST_ENABLED,
+        ):
+            forecast = limit_forecast(window, now)
+            if forecast is not None:
+                if forecast.before_reset:
+                    detail += (
+                        " · forecast: full around "
+                        f"{forecast.depletion_at:%H:%M}"
+                    )
+                else:
+                    detail += " · forecast: not expected before reset"
+            else:
+                reason = limit_forecast_unavailable_reason(window, now)
+                if reason is not None:
+                    detail += f" · forecast: {reason}"
         title = QLabel(
             f"{provider} · {window.label} · "
             f"{limit_percent_text(used, display_mode)}{detail}"
@@ -1362,7 +1404,9 @@ class MainWindow(QMainWindow):
         title.setWordWrap(True)
         bar = QProgressBar()
         bar.setRange(0, 100)
-        bar.setValue(round(value))
+        # Match upstream: the gauge and risk color always represent quota used.
+        # The Used/Remaining preference changes the numeric label only.
+        bar.setValue(round(used))
         bar.setTextVisible(False)
         bar.setFixedHeight(10)
         bar.setToolTip(
@@ -1837,6 +1881,8 @@ class TrayController(QObject):
             self.app,
             self.settings,
             self.show_window,
+            on_refresh=self.refresh,
+            on_quit=self.quit,
             warning_percent=self.warning_threshold,
             critical_percent=self.critical_threshold,
             display_mode=self.limit_display_mode,
@@ -1989,6 +2035,20 @@ class TrayController(QObject):
             self.critical_threshold,
         )
         self.floating_pet.set_limit_display_mode(self.limit_display_mode)
+        self.floating_pet.set_display_preferences(
+            show_tokens=settings_bool(
+                self.settings.value("tray_show_tokens", True),
+                True,
+            ),
+            show_cost=settings_bool(
+                self.settings.value("tray_show_cost", False),
+                False,
+            ),
+            show_limit=settings_bool(
+                self.settings.value("tray_show_limit", True),
+                True,
+            ),
+        )
         self.settings.sync()
         self._apply_theme()
         if self.last_result is not None:
