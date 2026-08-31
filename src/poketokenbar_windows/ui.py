@@ -65,11 +65,15 @@ from PySide6.QtWidgets import (
 from .formatting import (
     DEFAULT_FORECAST_ENABLED,
     DEFAULT_LIMIT_DISPLAY_MODE,
+    DEFAULT_LIMIT_TIME_MODE,
     FORECAST_ENABLED_KEY,
     LIMIT_DISPLAY_MODE_KEY,
+    LIMIT_TIME_MODE_KEY,
     LimitDisplayMode,
+    LimitTimeMode,
     companion_level_text,
     compact_tokens,
+    format_limit_event_time,
     highest_relevant_limit,
     is_reserve_window,
     limit_alert_body,
@@ -80,6 +84,7 @@ from .formatting import (
     limit_reset_tray_warning,
     money,
     normalize_limit_display_mode,
+    normalize_limit_time_mode,
     ordered_limit_windows,
     provider_limit_rows,
 )
@@ -205,6 +210,7 @@ def tray_tooltip(
     show_cost: bool = False,
     show_limit: bool = True,
     limit_display_mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
+    limit_time_mode: LimitTimeMode = DEFAULT_LIMIT_TIME_MODE,
 ) -> str:
     parts: list[str] = []
     if show_tokens:
@@ -219,7 +225,10 @@ def tray_tooltip(
 
     warnings: list[tuple[float, str]] = []
     for limits in result.limits.values():
-        warning = limit_reset_tray_warning(limits)
+        warning = limit_reset_tray_warning(
+            limits,
+            time_mode=limit_time_mode,
+        )
         expiry = limit_reset_expiry(limits)
         if warning and expiry is not None:
             warnings.append((expiry.timestamp(), warning))
@@ -1079,6 +1088,77 @@ class MainWindow(QMainWindow):
         display_hint.setWordWrap(True)
         display_hint.setStyleSheet("color: #6b7280;")
         limits_layout.addWidget(display_hint)
+        time_row = QHBoxLayout()
+        time_row.addWidget(QLabel("Show limit times as"))
+        time_mode = normalize_limit_time_mode(
+            self.settings.value(
+                LIMIT_TIME_MODE_KEY,
+                DEFAULT_LIMIT_TIME_MODE,
+            )
+        )
+        self.limit_time_toggle = QFrame()
+        self.limit_time_toggle.setObjectName("LimitTimeModeToggle")
+        time_toggle_layout = QHBoxLayout(self.limit_time_toggle)
+        time_toggle_layout.setContentsMargins(0, 0, 0, 0)
+        time_toggle_layout.setSpacing(0)
+        self.limit_time_group = QButtonGroup(self.limit_time_toggle)
+        self.limit_time_group.setExclusive(True)
+        self.limit_time_remaining_button = QPushButton("Time left")
+        self.limit_time_datetime_button = QPushButton("Date & time")
+        for button, mode in (
+            (self.limit_time_remaining_button, "remaining"),
+            (self.limit_time_datetime_button, "datetime"),
+        ):
+            button.setObjectName(
+                "LimitTimeRemainingSegment"
+                if mode == "remaining"
+                else "LimitTimeDatetimeSegment"
+            )
+            button.setProperty("limitTimeModeSegment", True)
+            button.setCheckable(True)
+            button.setProperty("limitTimeMode", mode)
+            button.setFixedWidth(112)
+            button.setToolTip(
+                "Show compact countdowns"
+                if mode == "remaining"
+                else "Show a short date and time"
+            )
+            self.limit_time_group.addButton(button)
+            time_toggle_layout.addWidget(button)
+        self.limit_time_remaining_button.setChecked(time_mode == "remaining")
+        self.limit_time_datetime_button.setChecked(time_mode == "datetime")
+        self.limit_time_group.buttonClicked.connect(
+            lambda button: self._save_preference(
+                LIMIT_TIME_MODE_KEY,
+                str(button.property("limitTimeMode")),
+            )
+        )
+        self.limit_time_toggle.setStyleSheet(
+            "QPushButton[limitTimeModeSegment='true'] {"
+            "  border: 1px solid palette(mid); padding: 5px 12px; margin: 0;"
+            "  background: palette(button);"
+            "}"
+            "QPushButton#LimitTimeRemainingSegment {"
+            "  border-top-left-radius: 6px; border-bottom-left-radius: 6px;"
+            "  border-right-width: 0;"
+            "}"
+            "QPushButton#LimitTimeDatetimeSegment {"
+            "  border-top-right-radius: 6px; border-bottom-right-radius: 6px;"
+            "}"
+            "QPushButton[limitTimeModeSegment='true']:checked {"
+            "  background: #2563eb; color: white; border-color: #2563eb;"
+            "  font-weight: 600;"
+            "}"
+        )
+        time_row.addWidget(self.limit_time_toggle)
+        time_row.addStretch(1)
+        limits_layout.addLayout(time_row)
+        time_hint = QLabel(
+            "Applies to resets, depletion forecasts, reset-credit expiry and related warnings."
+        )
+        time_hint.setWordWrap(True)
+        time_hint.setStyleSheet("color: #6b7280;")
+        limits_layout.addWidget(time_hint)
         self.forecast_check = self._setting_check(
             "Show depletion forecast for timed limits",
             FORECAST_ENABLED_KEY,
@@ -1293,6 +1373,12 @@ class MainWindow(QMainWindow):
 
         self.limits_list.clear()
         any_limits = False
+        time_mode = normalize_limit_time_mode(
+            self.settings.value(
+                LIMIT_TIME_MODE_KEY,
+                DEFAULT_LIMIT_TIME_MODE,
+            )
+        )
         for key, limits in result.limits.items():
             label = PROVIDER_LABELS.get(key, key.title())
             ordered_windows = ordered_limit_windows(limits)
@@ -1305,6 +1391,7 @@ class MainWindow(QMainWindow):
                         DEFAULT_LIMIT_DISPLAY_MODE,
                     )
                 ),
+                time_mode=time_mode,
             )
             for window in ordered_windows:
                 any_limits = True
@@ -1395,20 +1482,24 @@ class MainWindow(QMainWindow):
                 DEFAULT_LIMIT_DISPLAY_MODE,
             )
         )
+        time_mode = normalize_limit_time_mode(
+            self.settings.value(
+                LIMIT_TIME_MODE_KEY,
+                DEFAULT_LIMIT_TIME_MODE,
+            )
+        )
         detail = ""
         now = datetime.now().astimezone()
         if window.resets_at is not None:
-            reset = window.resets_at
-            if reset.tzinfo is None:
-                now = now.replace(tzinfo=None)
-            else:
-                now = now.astimezone(reset.tzinfo)
-            seconds = max(0, int((reset - now).total_seconds()))
-            days, remainder = divmod(seconds, 86_400)
-            hours, remainder = divmod(remainder, 3_600)
-            minutes = remainder // 60
-            countdown = f"{days}d {hours}h" if days else (f"{hours}h {minutes}m" if hours else f"{minutes}m")
-            detail = f" · resets in {countdown}"
+            detail = (
+                " · "
+                + format_limit_event_time(
+                    "resets",
+                    window.resets_at,
+                    time_mode,
+                    now,
+                )
+            )
         if settings_bool(
             self.settings.value(
                 FORECAST_ENABLED_KEY,
@@ -1419,9 +1510,12 @@ class MainWindow(QMainWindow):
             forecast = limit_forecast(window, now)
             if forecast is not None:
                 if forecast.before_reset:
-                    detail += (
-                        " · forecast: full around "
-                        f"{forecast.depletion_at:%H:%M}"
+                    detail += " · forecast: " + format_limit_event_time(
+                        "full",
+                        forecast.depletion_at,
+                        time_mode,
+                        now,
+                        approximate=True,
                     )
                 else:
                     detail += " · forecast: safe until reset"
@@ -1905,6 +1999,12 @@ class TrayController(QObject):
                 DEFAULT_LIMIT_DISPLAY_MODE,
             )
         )
+        self.limit_time_mode = normalize_limit_time_mode(
+            self.settings.value(
+                LIMIT_TIME_MODE_KEY,
+                DEFAULT_LIMIT_TIME_MODE,
+            )
+        )
 
         self.window = MainWindow(self.state, self.settings, self.api)
         self.window.refresh_requested.connect(self._refresh_and_reschedule)
@@ -1948,6 +2048,7 @@ class TrayController(QObject):
             warning_percent=self.warning_threshold,
             critical_percent=self.critical_threshold,
             display_mode=self.limit_display_mode,
+            time_mode=self.limit_time_mode,
         )
         self.floating_pet.enabled_changed.connect(self._sync_pet_visibility)
         self.floating_pet.size_changed.connect(
@@ -2095,6 +2196,7 @@ class TrayController(QObject):
             show_cost=self.settings.value("tray_show_cost", False, type=bool),
             show_limit=self.settings.value("tray_show_limit", True, type=bool),
             limit_display_mode=self.limit_display_mode,
+            limit_time_mode=self.limit_time_mode,
         )
         self.tray.setToolTip(tooltip)
 
@@ -2122,6 +2224,12 @@ class TrayController(QObject):
                 DEFAULT_LIMIT_DISPLAY_MODE,
             )
         )
+        self.limit_time_mode = normalize_limit_time_mode(
+            self.settings.value(
+                LIMIT_TIME_MODE_KEY,
+                DEFAULT_LIMIT_TIME_MODE,
+            )
+        )
         self.floating_pet.set_alerts_enabled(
             settings_bool(self.settings.value(PET_ALERTS_KEY, True), True)
         )
@@ -2130,6 +2238,7 @@ class TrayController(QObject):
             self.critical_threshold,
         )
         self.floating_pet.set_limit_display_mode(self.limit_display_mode)
+        self.floating_pet.set_limit_time_mode(self.limit_time_mode)
         self.floating_pet.set_display_preferences(
             show_tokens=settings_bool(
                 self.settings.value("tray_show_tokens", True),

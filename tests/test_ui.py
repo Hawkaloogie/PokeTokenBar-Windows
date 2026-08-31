@@ -179,7 +179,8 @@ class UITests(unittest.TestCase):
         widget = window.limits_list.itemWidget(window.limits_list.item(0))
         title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
         self.assertIn("25% remaining", title)
-        self.assertIn("forecast: full around", title)
+        self.assertIn("resets in", title)
+        self.assertIn("forecast: full in ~1h", title)
         self.assertEqual(widget.findChild(QProgressBar).value(), 25)
 
         tooltip = tray_tooltip(result, limit_display_mode="remaining")
@@ -202,6 +203,53 @@ class UITests(unittest.TestCase):
 
         self.assertTrue(window.limit_remaining_button.isChecked())
         self.assertEqual(self.settings.value("limit_display_mode"), "remaining")
+
+    def test_limit_time_display_uses_a_shared_segmented_toggle(self):
+        window = self._window()
+        self.assertTrue(window.limit_time_remaining_button.isChecked())
+        self.assertFalse(window.limit_time_datetime_button.isChecked())
+
+        window.limit_time_datetime_button.click()
+
+        self.assertTrue(window.limit_time_datetime_button.isChecked())
+        self.assertEqual(
+            self.settings.value("limit_time_display_mode"),
+            "datetime",
+        )
+
+    def test_datetime_mode_uses_short_dates_for_reset_and_forecast(self):
+        self.settings.setValue("limit_time_display_mode", "datetime")
+        now = datetime.now(timezone.utc)
+        reset = now + timedelta(hours=2)
+        limits = {
+            "codex": ProviderLimits(
+                "codex",
+                windows=[LimitWindow("5-hour", 75, reset, duration_minutes=300)],
+            )
+        }
+        window = self._window()
+        window.render(
+            RefreshResult(
+                UsageSnapshot(scanned_at=now),
+                limits,
+                {},
+                GameState(),
+                [],
+                None,
+                "Pokemon Egg",
+            )
+        )
+
+        widget = window.limits_list.itemWidget(window.limits_list.item(0))
+        title = next(
+            label.text()
+            for label in widget.findChildren(QLabel)
+            if "Codex" in label.text()
+        )
+        self.assertIn(f"resets {reset:%d %b, %H:%M}", title)
+        self.assertIn("forecast: full ", title)
+        self.assertNotIn("resets in", title)
+        self.assertNotIn("full in", title)
 
     def test_forecast_explains_when_there_is_not_enough_data(self):
         self.settings.setValue("limits_forecast_enabled", True)
@@ -384,6 +432,7 @@ class UITests(unittest.TestCase):
         controller.tray = Mock()
         controller.settings = self.settings
         controller.limit_display_mode = "used"
+        controller.limit_time_mode = "remaining"
         controller.api = FakeUIAPI()
         controller.refresh = Mock()
         controller.last_result = RefreshResult(

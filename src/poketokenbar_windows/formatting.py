@@ -8,9 +8,12 @@ from .models import LimitWindow, ProviderLimits, UsageSnapshot
 
 ResetUrgency = Literal["neutral", "warning", "critical"]
 LimitDisplayMode = Literal["used", "remaining"]
+LimitTimeMode = Literal["remaining", "datetime"]
 
 LIMIT_DISPLAY_MODE_KEY = "limit_display_mode"
 DEFAULT_LIMIT_DISPLAY_MODE: LimitDisplayMode = "used"
+LIMIT_TIME_MODE_KEY = "limit_time_display_mode"
+DEFAULT_LIMIT_TIME_MODE: LimitTimeMode = "remaining"
 FORECAST_ENABLED_KEY = "limits_forecast_enabled"
 DEFAULT_FORECAST_ENABLED = True
 
@@ -54,6 +57,10 @@ def companion_level_text(progress_percent: int | float) -> str:
 
 def normalize_limit_display_mode(value: Any) -> LimitDisplayMode:
     return "remaining" if str(value).strip().lower() == "remaining" else "used"
+
+
+def normalize_limit_time_mode(value: Any) -> LimitTimeMode:
+    return "datetime" if str(value).strip().lower() == "datetime" else "remaining"
 
 
 def limit_display_percent(
@@ -188,7 +195,48 @@ def limit_forecast_unavailable_reason(
 
 
 def format_limit_datetime(value: datetime) -> str:
-    return value.strftime("%a %d %b, %H:%M")
+    return value.strftime("%d %b, %H:%M")
+
+
+def format_limit_countdown(
+    value: datetime,
+    now: datetime | None = None,
+    *,
+    approximate: bool = False,
+) -> str:
+    seconds = max(0, int((value - _now_for(value, now)).total_seconds()))
+    if approximate:
+        if seconds >= 3_600:
+            hours = max(1, int(seconds / 3_600 + 0.5))
+            return f"~{hours}h"
+        minutes = max(1, int(seconds / 60 + 0.5))
+        return f"~{minutes}m"
+
+    days, remainder = divmod(seconds, 86_400)
+    hours, remainder = divmod(remainder, 3_600)
+    minutes = remainder // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def format_limit_event_time(
+    label: str,
+    value: datetime,
+    mode: LimitTimeMode = DEFAULT_LIMIT_TIME_MODE,
+    now: datetime | None = None,
+    *,
+    approximate: bool = False,
+) -> str:
+    normalized = normalize_limit_time_mode(mode)
+    if normalized == "datetime":
+        return f"{label} {format_limit_datetime(value)}"
+    return (
+        f"{label} in "
+        f"{format_limit_countdown(value, now, approximate=approximate)}"
+    )
 
 
 def _reset_title_and_scope(title: str | None) -> tuple[str, str | None]:
@@ -246,7 +294,12 @@ def limit_reset_urgency(limits: ProviderLimits, now: datetime | None = None) -> 
     return "neutral"
 
 
-def limit_reset_summary(limits: ProviderLimits) -> str:
+def limit_reset_summary(
+    limits: ProviderLimits,
+    now: datetime | None = None,
+    *,
+    time_mode: LimitTimeMode = DEFAULT_LIMIT_TIME_MODE,
+) -> str:
     count = limits.reset_credits_available
     if count <= 0:
         return ""
@@ -265,19 +318,32 @@ def limit_reset_summary(limits: ProviderLimits) -> str:
         expiry_label = "first expires"
 
     if next_credit and next_credit.expires_at:
-        parts.append(f"{expiry_label} {format_limit_datetime(next_credit.expires_at)}")
+        parts.append(
+            format_limit_event_time(
+                expiry_label,
+                next_credit.expires_at,
+                time_mode,
+                now,
+            )
+        )
     else:
         parts.append("expiry unknown")
     return " · ".join(parts)
 
 
-def limit_reset_tray_warning(limits: ProviderLimits, now: datetime | None = None) -> str:
+def limit_reset_tray_warning(
+    limits: ProviderLimits,
+    now: datetime | None = None,
+    *,
+    time_mode: LimitTimeMode = DEFAULT_LIMIT_TIME_MODE,
+) -> str:
     expiry = limit_reset_expiry(limits)
     urgency = limit_reset_urgency(limits, now)
     if expiry is None or urgency == "neutral":
         return ""
     marker = "🔴" if urgency == "critical" else "🟠"
-    return f"{marker} reset expires {format_limit_datetime(expiry)}"
+    expiry_text = format_limit_event_time("expires", expiry, time_mode, now)
+    return f"{marker} reset {expiry_text}"
 
 
 def ordered_limit_windows(limits: ProviderLimits) -> list[LimitWindow]:
@@ -307,16 +373,20 @@ def provider_limit_rows(
     now: datetime | None = None,
     *,
     display_mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
+    time_mode: LimitTimeMode = DEFAULT_LIMIT_TIME_MODE,
 ) -> list[LimitDisplayRow]:
     window_rows: list[LimitDisplayRow] = []
     plan = f" · {limits.plan}" if limits.plan else ""
     for window in ordered_limit_windows(limits):
-        reset = format_limit_datetime(window.resets_at) if window.resets_at else "unknown"
+        reset = (
+            format_limit_event_time("resets", window.resets_at, time_mode, now)
+            if window.resets_at else "reset unknown"
+        )
         window_rows.append(
             LimitDisplayRow(
                 text=(
                     f"{provider_label}{plan} · {window.label}: "
-                    f"{limit_percent_text(window.used_percent, display_mode)} · resets {reset}"
+                    f"{limit_percent_text(window.used_percent, display_mode)} · {reset}"
                 ),
                 occurs_at=window.resets_at,
             )
@@ -324,7 +394,7 @@ def provider_limit_rows(
 
     rows = window_rows
 
-    reset_summary = limit_reset_summary(limits)
+    reset_summary = limit_reset_summary(limits, now, time_mode=time_mode)
     if reset_summary:
         urgency = limit_reset_urgency(limits, now)
         marker = "⚠ " if urgency != "neutral" else ""

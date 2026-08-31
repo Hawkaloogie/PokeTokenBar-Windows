@@ -8,9 +8,11 @@ from typing import Any, Mapping, Sequence
 
 from .formatting import (
     DEFAULT_LIMIT_DISPLAY_MODE,
+    DEFAULT_LIMIT_TIME_MODE,
     LimitDisplayMode,
+    LimitTimeMode,
     compact_tokens,
-    format_limit_datetime,
+    format_limit_event_time,
     highest_relevant_limit,
     limit_alert_body,
     limit_percent_text,
@@ -228,6 +230,7 @@ def evaluate_pet_alerts(
     warning_percent: float = PET_WARNING_PERCENT,
     critical_percent: float = PET_CRITICAL_PERCENT,
     display_mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
+    time_mode: LimitTimeMode = DEFAULT_LIMIT_TIME_MODE,
 ) -> tuple[list[PetAlert], dict[str, AlertMemory]]:
     """Edge-trigger limit and reset alerts while preserving one state per time window."""
     updated = dict(memory or {})
@@ -265,7 +268,9 @@ def evaluate_pet_alerts(
             tier=reset_tier,
             title="Full reset expires soon" if reset_tier == 2 else "Full reset reminder",
             body=(
-                f"{provider_label} full reset expires {format_limit_datetime(expiry)}."
+                f"{provider_label} full reset "
+                + format_limit_event_time("expires", expiry, time_mode, now)
+                + "."
                 if expiry is not None else f"{provider_label} full reset expiry is unknown."
             ),
             priority=100.0 if reset_tier == 2 else 80.0,
@@ -285,6 +290,7 @@ def pet_hover_text(
     limits_by_provider: Mapping[str, ProviderLimits],
     display_mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
     *,
+    time_mode: LimitTimeMode = DEFAULT_LIMIT_TIME_MODE,
     show_tokens: bool = True,
     show_cost: bool = False,
     show_limit: bool = True,
@@ -311,7 +317,11 @@ def pet_hover_text(
             if urgency != "neutral" and expiry is not None:
                 marker = "Critical" if urgency == "critical" else "Warning"
                 reset_warnings.append(
-                    (expiry.timestamp(), f"{marker}: {provider.title()} full reset expires {format_limit_datetime(expiry)}")
+                    (
+                        expiry.timestamp(),
+                        f"{marker}: {provider.title()} full reset "
+                        + format_limit_event_time("expires", expiry, time_mode),
+                    )
                 )
     if reset_warnings:
         lines.append(min(reset_warnings, key=lambda item: item[0])[1])

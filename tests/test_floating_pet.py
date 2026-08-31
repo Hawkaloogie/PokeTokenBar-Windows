@@ -161,9 +161,21 @@ class PetAlertTests(unittest.TestCase):
         )
         alerts, memory = evaluate_pet_alerts({"codex": status}, now=self.now)
         self.assertIn("warning", [alert.severity for alert in alerts])
+        reset_alert = next(alert for alert in alerts if alert.key.startswith("reset|"))
+        self.assertIn("expires in 8d 0h", reset_alert.body)
         status.reset_credits[0].expires_at = self.now + timedelta(hours=72)
-        alerts, _ = evaluate_pet_alerts({"codex": status}, memory, self.now)
+        alerts, _ = evaluate_pet_alerts(
+            {"codex": status},
+            memory,
+            self.now,
+            time_mode="datetime",
+        )
         self.assertIn("critical", [alert.severity for alert in alerts])
+        reset_alert = next(alert for alert in alerts if alert.key.startswith("reset|"))
+        self.assertIn(
+            (self.now + timedelta(hours=72)).strftime("expires %d %b, %H:%M"),
+            reset_alert.body,
+        )
 
     def test_hover_and_alerts_ignore_codex_spend_bucket(self):
         status = ProviderLimits(

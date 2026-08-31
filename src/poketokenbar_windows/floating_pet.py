@@ -16,7 +16,12 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QMenu, QVBoxLayout, QWidget
 
-from .formatting import DEFAULT_LIMIT_DISPLAY_MODE, LimitDisplayMode
+from .formatting import (
+    DEFAULT_LIMIT_DISPLAY_MODE,
+    DEFAULT_LIMIT_TIME_MODE,
+    LimitDisplayMode,
+    LimitTimeMode,
+)
 from .pet_logic import (
     PET_ALERT_TTL_MS,
     PET_DEFAULT_SIZE,
@@ -604,6 +609,7 @@ class FloatingPetController(QObject):
         warning_percent: float = 80.0,
         critical_percent: float = 95.0,
         display_mode: LimitDisplayMode = DEFAULT_LIMIT_DISPLAY_MODE,
+        time_mode: LimitTimeMode = DEFAULT_LIMIT_TIME_MODE,
     ):
         super().__init__()
         self.app = app
@@ -616,6 +622,7 @@ class FloatingPetController(QObject):
         self.warning_percent = float(warning_percent)
         self.critical_percent = float(critical_percent)
         self.display_mode = display_mode
+        self.time_mode = time_mode
         self.show_tokens = settings_bool(settings.value("tray_show_tokens", True), True)
         self.show_cost = settings_bool(settings.value("tray_show_cost", False), False)
         self.show_limit = settings_bool(settings.value("tray_show_limit", True), True)
@@ -721,6 +728,10 @@ class FloatingPetController(QObject):
         self.display_mode = display_mode
         self._refresh_hover_text()
 
+    def set_limit_time_mode(self, time_mode: LimitTimeMode) -> None:
+        self.time_mode = time_mode
+        self._refresh_hover_text()
+
     def set_display_preferences(
         self,
         *,
@@ -740,6 +751,7 @@ class FloatingPetController(QObject):
             self.result.snapshot,
             self.result.limits,
             self.display_mode,
+            time_mode=self.time_mode,
             show_tokens=self.show_tokens,
             show_cost=self.show_cost,
             show_limit=self.show_limit,
@@ -808,6 +820,7 @@ class FloatingPetController(QObject):
                 warning_percent=self.warning_percent,
                 critical_percent=self.critical_percent,
                 display_mode=self.display_mode,
+                time_mode=self.time_mode,
             )
             self.settings.setValue(PET_ALERT_MEMORY_KEY, dump_alert_memory(self.alert_memory))
             self.settings.sync()
