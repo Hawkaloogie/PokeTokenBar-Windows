@@ -7,7 +7,7 @@ import sys
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -83,6 +83,10 @@ from .formatting import (
     provider_limit_rows,
 )
 from .floating_pet import (
+    MENU_OPEN_LABEL,
+    MENU_PET_VISIBILITY_LABEL,
+    MENU_QUIT_LABEL,
+    MENU_REFRESH_LABEL,
     PET_ALERTS_KEY,
     PET_ENABLED_KEY,
     PET_SIZE_KEY,
@@ -878,7 +882,21 @@ class MainWindow(QMainWindow):
     def _choose_representative(self) -> None:
         if self.representative_combo.signalsBlocked():
             return
-        self.representative_changed.emit(self.representative_combo.currentData())
+        self.representative_changed.emit(
+            self._representative_selection_data(
+                self.representative_combo.currentData()
+            )
+        )
+
+    @staticmethod
+    def _representative_selection_data(value: object) -> tuple[int, bool] | None:
+        """Normalize QVariantList data back to the tuple stored by the app."""
+        if isinstance(value, (tuple, list)) and len(value) == 2:
+            try:
+                return int(value[0]), bool(value[1])
+            except (TypeError, ValueError):
+                return None
+        return None
 
     def _build_shop(self) -> QWidget:
         root = QWidget()
@@ -1392,7 +1410,7 @@ class MainWindow(QMainWindow):
                         f"{forecast.depletion_at:%H:%M}"
                     )
                 else:
-                    detail += " · forecast: not expected before reset"
+                    detail += " · forecast: safe until reset"
             else:
                 reason = limit_forecast_unavailable_reason(window, now)
                 if reason is not None:
@@ -1404,9 +1422,8 @@ class MainWindow(QMainWindow):
         title.setWordWrap(True)
         bar = QProgressBar()
         bar.setRange(0, 100)
-        # Match upstream: the gauge and risk color always represent quota used.
-        # The Used/Remaining preference changes the numeric label only.
-        bar.setValue(round(used))
+        displayed = window.remaining_percent if display_mode == "remaining" else used
+        bar.setValue(round(displayed))
         bar.setTextVisible(False)
         bar.setFixedHeight(10)
         bar.setToolTip(
@@ -1578,8 +1595,18 @@ class MainWindow(QMainWindow):
                 f"{self.api.localized_name(subject.species_id, self.state.language)}",
                 data,
             )
-        selected_index = self.representative_combo.findData(selected)
-        self.representative_combo.setCurrentIndex(max(0, selected_index))
+        selected_index = 0
+        if selected is not None:
+            for index in range(1, self.representative_combo.count()):
+                if (
+                    self._representative_selection_data(
+                        self.representative_combo.itemData(index)
+                    )
+                    == selected
+                ):
+                    selected_index = index
+                    break
+        self.representative_combo.setCurrentIndex(selected_index)
         self.representative_combo.blockSignals(False)
         self.dex_empty.setVisible(not catches)
         self.catch_empty.setVisible(not catches)
@@ -1859,14 +1886,14 @@ class TrayController(QObject):
         self.tray = QSystemTrayIcon(_pokeball_icon(), self)
         self.tray.setToolTip(f"{APP_NAME} · Loading usage and limits…")
         menu = QMenu()
-        open_action = QAction("Open PokeTokenBar", self)
+        open_action = QAction(MENU_OPEN_LABEL, self)
         open_action.triggered.connect(self.show_window)
-        self.pet_visibility_action = QAction("Show desktop pet", self)
+        self.pet_visibility_action = QAction(MENU_PET_VISIBILITY_LABEL, self)
         self.pet_visibility_action.setCheckable(True)
         self.pet_visibility_action.triggered.connect(self._set_pet_visible)
-        refresh_action = QAction("Refresh", self)
+        refresh_action = QAction(MENU_REFRESH_LABEL, self)
         refresh_action.triggered.connect(self.refresh)
-        quit_action = QAction("Quit", self)
+        quit_action = QAction(MENU_QUIT_LABEL, self)
         quit_action.triggered.connect(self.quit)
         menu.addAction(open_action)
         menu.addAction(self.pet_visibility_action)
@@ -1979,9 +2006,42 @@ class TrayController(QObject):
                 "The representative could not be changed. Your save was not changed.",
             )
             return
-        self.floating_pet.set_loading()
         self.window.set_state(self.state)
+        self.floating_pet.set_loading()
+        preview = self._representative_preview()
+        if preview is not None:
+            self.last_result = preview
+            self._update_companion_surfaces(preview)
         self.refresh()
+
+    def _representative_preview(self) -> RefreshResult | None:
+        """Resolve a representative immediately; the background refresh may add GIF."""
+        if self.last_result is None:
+            return None
+        subject = representative_subject(self.state)
+        if self.state.representative_species_id is None:
+            pet_sprite = self.last_result.sprite_path
+            pet_name = self.last_result.display_name
+        elif subject.species_id is not None:
+            pet_sprite = self.api.sprite_path(
+                subject.species_id,
+                shiny=subject.is_shiny,
+                animated=False,
+            )
+            pet_name = self.api.localized_name(
+                subject.species_id,
+                self.state.language,
+            )
+        else:
+            pet_sprite = self.api.egg_sprite_path()
+            pet_name = "Pokemon Egg"
+        return replace(
+            self.last_result,
+            state=self.state,
+            pet_sprite_path=pet_sprite,
+            pet_display_name=pet_name,
+            pet_is_egg=subject.is_egg,
+        )
 
     def _update_companion_surfaces(self, result: RefreshResult) -> None:
         self.floating_pet.update(result)

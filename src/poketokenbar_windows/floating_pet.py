@@ -30,6 +30,10 @@ PET_X_KEY = "floating_pet/position_x"
 PET_Y_KEY = "floating_pet/position_y"
 PET_ALERTS_KEY = "floating_pet/alerts_enabled"
 PET_ALERT_MEMORY_KEY = "floating_pet/alert_memory"
+MENU_OPEN_LABEL = "Open PokeTokenBar"
+MENU_PET_VISIBILITY_LABEL = "Show desktop pet"
+MENU_REFRESH_LABEL = "Refresh"
+MENU_QUIT_LABEL = "Quit"
 
 
 def _egg_pixmap(size: int) -> QPixmap:
@@ -86,26 +90,29 @@ def _pokeball_pixmap(size: int) -> QPixmap:
     return pixmap
 
 
-def _loading_pixmap(size: int, active_dot: int) -> QPixmap:
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
+def _loading_pokeball_pixmap(size: int, ball: QPixmap, frame: int) -> QPixmap:
+    """Render the looping Poké Ball shake used while a new pet is resolved."""
+    canvas = QPixmap(size, size)
+    canvas.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(canvas)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    margin = max(2, size // 48)
-    painter.setBrush(QColor(255, 255, 255, 210))
-    painter.setPen(QPen(QColor(55, 65, 81, 120), max(1, size // 48)))
-    painter.drawEllipse(margin, margin, size - margin * 2, size - margin * 2)
-    radius = max(3, size // 18)
-    spacing = max(radius * 3, size // 5)
-    center_x = size // 2
-    center_y = size // 2
-    painter.setPen(Qt.PenStyle.NoPen)
-    for index in range(3):
-        painter.setBrush(QColor(55, 65, 81, 220 if index == active_dot else 65))
-        x = center_x + (index - 1) * spacing - radius
-        painter.drawEllipse(x, center_y - radius, radius * 2, radius * 2)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    offsets = (0, -5, 5, -4, 4, -2, 2, 0)
+    offset = round(offsets[frame % len(offsets)] * size / 96)
+    ball_size = max(28, round(size * 0.58))
+    rendered = ball.scaled(
+        ball_size,
+        ball_size,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    painter.drawPixmap(
+        (size - rendered.width()) // 2 + offset,
+        (size - rendered.height()) // 2 + round(size * 0.1),
+        rendered,
+    )
     painter.end()
-    return pixmap
+    return canvas
 
 
 class FloatingPetWindow(QWidget):
@@ -134,8 +141,9 @@ class FloatingPetWindow(QWidget):
         self.is_egg = False
         self.is_loading = True
         self.loading_frame = 0
+        self.loading_ball_pixmap = _pokeball_pixmap(max(32, round(size * 0.56)))
         self.loading_timer = QTimer(self)
-        self.loading_timer.setInterval(350)
+        self.loading_timer.setInterval(90)
         self.loading_timer.timeout.connect(self._advance_loading)
         self.loading_timer.start()
         self.reveal_timer = QTimer(self)
@@ -183,7 +191,7 @@ class FloatingPetWindow(QWidget):
             movie.deleteLater()
         self._render_current_frame()
 
-    def set_loading(self) -> None:
+    def set_loading(self, ball_path: Path | None = None) -> None:
         self.reveal_timer.stop()
         if self.movie is not None:
             self.movie.stop()
@@ -191,6 +199,16 @@ class FloatingPetWindow(QWidget):
             self.movie = None
         self.is_loading = True
         self.loading_frame = 0
+        ball = (
+            QPixmap(str(ball_path))
+            if ball_path is not None and ball_path.exists()
+            else QPixmap()
+        )
+        self.loading_ball_pixmap = (
+            ball
+            if not ball.isNull()
+            else _pokeball_pixmap(max(32, round(self.pet_size * 0.56)))
+        )
         self.sprite_path = None
         self.is_egg = False
         self.label.clear()
@@ -306,14 +324,20 @@ class FloatingPetWindow(QWidget):
         if not self.is_loading:
             self.loading_timer.stop()
             return
-        self.loading_frame = (self.loading_frame + 1) % 3
+        self.loading_frame = (self.loading_frame + 1) % 8
         self._render_current_frame()
 
     def _render_current_frame(self, *_args) -> None:
         if self.is_loading:
             self.label.setText("")
             self.label.setStyleSheet("background: transparent;")
-            self.label.setPixmap(_loading_pixmap(self.pet_size, self.loading_frame))
+            self.label.setPixmap(
+                _loading_pokeball_pixmap(
+                    self.pet_size,
+                    self.loading_ball_pixmap,
+                    self.loading_frame,
+                )
+            )
             return
         pixmap = QPixmap()
         if self.movie is not None:
@@ -401,21 +425,33 @@ class FloatingPetWindow(QWidget):
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:  # noqa: N802
         self.hover_changed.emit(False)
-        menu = QMenu(self)
-        open_action = menu.addAction("Open PokeTokenBar")
-        refresh_action = menu.addAction("Refresh")
-        hide_action = menu.addAction("Hide")
-        menu.addSeparator()
-        quit_action = menu.addAction("Quit")
+        menu, actions = self._build_context_menu()
         selected = menu.exec(event.globalPos())
-        if selected is open_action:
+        if selected is actions["open"]:
             self.clicked.emit()
-        elif selected is refresh_action:
-            self.refresh_requested.emit()
-        elif selected is hide_action:
+        elif selected is actions["visibility"]:
             self.hide_requested.emit()
-        elif selected is quit_action:
+        elif selected is actions["refresh"]:
+            self.refresh_requested.emit()
+        elif selected is actions["quit"]:
             self.quit_requested.emit()
+
+    def _build_context_menu(self) -> tuple[QMenu, dict[str, object]]:
+        """Mirror the tray menu exactly while the pet itself is visible."""
+        menu = QMenu(self)
+        open_action = menu.addAction(MENU_OPEN_LABEL)
+        visibility_action = menu.addAction(MENU_PET_VISIBILITY_LABEL)
+        visibility_action.setCheckable(True)
+        visibility_action.setChecked(True)
+        refresh_action = menu.addAction(MENU_REFRESH_LABEL)
+        menu.addSeparator()
+        quit_action = menu.addAction(MENU_QUIT_LABEL)
+        return menu, {
+            "open": open_action,
+            "visibility": visibility_action,
+            "refresh": refresh_action,
+            "quit": quit_action,
+        }
 
 
 class _CalloutBase(QFrame):
@@ -453,7 +489,11 @@ class HoverCallout(_CalloutBase):
 
     def set_text(self, text: str) -> None:
         self.label.setText(text)
-        self.adjustSize()
+        longest_line = max(text.splitlines() or [""], key=len)
+        natural_width = self.label.fontMetrics().horizontalAdvance(longest_line) + 2
+        width = max(180, min(280, natural_width))
+        self.label.setFixedWidth(width)
+        self.resize(self.sizeHint())
 
 
 class AlertBubble(_CalloutBase):
@@ -517,6 +557,7 @@ class FloatingPetController(QObject):
         self.size = normalize_pet_size(settings.value(PET_SIZE_KEY, PET_DEFAULT_SIZE))
         self.result: Any | None = None
         self.initial_reveal_played = False
+        self.reveal_on_next_update = False
         self.alert_memory = load_alert_memory(settings.value(PET_ALERT_MEMORY_KEY, ""))
         self.pet = FloatingPetWindow(self.size)
         self.hover = HoverCallout()
@@ -669,14 +710,19 @@ class FloatingPetController(QObject):
     def set_loading(self) -> None:
         self.hover.hide()
         self.bubble.hide()
-        self.pet.set_loading()
+        self.reveal_on_next_update = True
+        ball_path = self.result.reveal_ball_path if self.result is not None else None
+        self.pet.set_loading(ball_path)
 
     def _render_result(self, *, evaluate_alerts: bool) -> None:
         if self.result is None:
             return
-        animate_reveal = self.enabled and not self.initial_reveal_played
+        animate_reveal = self.enabled and (
+            not self.initial_reveal_played or self.reveal_on_next_update
+        )
         if animate_reveal:
             self.initial_reveal_played = True
+            self.reveal_on_next_update = False
             self.pet.start_companion_reveal(
                 self.result.pet_sprite_path,
                 is_egg=self.result.pet_is_egg,

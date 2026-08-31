@@ -20,7 +20,7 @@ from poketokenbar_windows.models import (
     UsageSnapshot,
 )
 from poketokenbar_windows.pokemon import EGG_HATCH_THRESHOLD, RARE_CANDY_XP
-from poketokenbar_windows.floating_pet import FloatingPetWindow
+from poketokenbar_windows.floating_pet import FloatingPetWindow, HoverCallout
 from poketokenbar_windows.state import CatchRecord, GameState, MonState
 from poketokenbar_windows.ui import (
     DesktopPet,
@@ -175,7 +175,7 @@ class UITests(unittest.TestCase):
         title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
         self.assertIn("25% remaining", title)
         self.assertIn("forecast: full around", title)
-        self.assertEqual(widget.findChild(QProgressBar).value(), 75)
+        self.assertEqual(widget.findChild(QProgressBar).value(), 25)
 
         tooltip = tray_tooltip(result, limit_display_mode="remaining")
         self.assertIn("Codex 5-hour: 25% left", tooltip)
@@ -230,6 +230,39 @@ class UITests(unittest.TestCase):
         title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
         self.assertIn("forecast: not enough data yet", title)
 
+    def test_forecast_uses_short_safe_until_reset_copy(self):
+        self.settings.setValue("limits_forecast_enabled", True)
+        now = datetime.now(timezone.utc)
+        limits = {
+            "codex": ProviderLimits(
+                "codex",
+                windows=[
+                    LimitWindow(
+                        "5-hour",
+                        30,
+                        now + timedelta(hours=2),
+                        duration_minutes=300,
+                    )
+                ],
+            )
+        }
+        window = self._window()
+        window.render(
+            RefreshResult(
+                UsageSnapshot(scanned_at=now),
+                limits,
+                {},
+                GameState(),
+                [],
+                None,
+                "Pokemon Egg",
+            )
+        )
+        widget = window.limits_list.itemWidget(window.limits_list.item(0))
+        title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
+        self.assertIn("forecast: safe until reset", title)
+        self.assertNotIn("not expected before reset", title)
+
     def test_initial_window_waits_for_real_refresh_data(self):
         controller = TrayController.__new__(TrayController)
         controller.last_result = None
@@ -262,6 +295,171 @@ class UITests(unittest.TestCase):
         self.assertFalse(pet.label.pixmap().isNull())
         pet.close()
 
+    def test_floating_pet_loading_uses_a_pokeball_instead_of_dots(self):
+        pet = FloatingPetWindow(96)
+        pet.set_loading()
+        image = pet.label.pixmap().toImage()
+        has_pokeball_red = any(
+            image.pixelColor(x, y).red() > 180
+            and image.pixelColor(x, y).green() < 100
+            and image.pixelColor(x, y).alpha() > 0
+            for x in range(image.width())
+            for y in range(image.height())
+        )
+        self.assertTrue(has_pokeball_red)
+        self.assertEqual(pet.loading_timer.interval(), 90)
+        pet.close()
+
+    def test_floating_pet_menu_matches_tray_order_and_labels(self):
+        pet = FloatingPetWindow(96)
+        menu, actions = pet._build_context_menu()
+        self.assertEqual(
+            [action.text() if not action.isSeparator() else None for action in menu.actions()],
+            ["Open PokeTokenBar", "Show desktop pet", "Refresh", None, "Quit"],
+        )
+        self.assertTrue(actions["visibility"].isCheckable())
+        self.assertTrue(actions["visibility"].isChecked())
+        menu.close()
+        pet.close()
+
+    def test_limit_only_hover_keeps_a_readable_horizontal_shape(self):
+        hover = HoverCallout()
+        hover.set_text("Codex 5-hour: 46% left")
+        self.assertGreaterEqual(hover.label.width(), 180)
+        self.assertLess(hover.height(), 60)
+        hover.close()
+
+    def test_follow_current_companion_previews_the_active_pet_immediately(self):
+        state = GameState(
+            mon=MonState(1, [1, 2, 3], 1, 10, "common", False, "Hardy"),
+            catches=[
+                CatchRecord(2, 1, [1, 2, 3], "common", False, "Hardy", "2026-08-30T10:00:00")
+            ],
+            representative_species_id=1,
+            representative_is_shiny=False,
+        )
+        controller = TrayController.__new__(TrayController)
+        controller.state_lock = threading.Lock()
+        controller.state = state
+        controller.store = Mock()
+        controller.window = Mock()
+        controller.floating_pet = Mock()
+        controller.tray = Mock()
+        controller.settings = self.settings
+        controller.limit_display_mode = "used"
+        controller.api = FakeUIAPI()
+        controller.refresh = Mock()
+        controller.last_result = RefreshResult(
+            UsageSnapshot(scanned_at=datetime.now(timezone.utc)),
+            {},
+            {},
+            state,
+            [],
+            None,
+            "Ivysaur",
+            pet_display_name="Bulbasaur",
+            pet_is_egg=False,
+        )
+
+        controller._set_representative(None)
+
+        self.assertIsNone(controller.state.representative_species_id)
+        self.assertEqual(controller.last_result.pet_display_name, "Ivysaur")
+        self.assertFalse(controller.last_result.pet_is_egg)
+        controller.floating_pet.set_loading.assert_called_once_with()
+        controller.floating_pet.update.assert_called_once_with(controller.last_result)
+        controller.refresh.assert_called_once_with()
+
+    def test_home_keeps_luna_reserve_visible_when_compact_surfaces_do_not(self):
+        now = datetime.now(timezone.utc)
+        limits = {
+            "codex": ProviderLimits(
+                "codex",
+                windows=[
+                    LimitWindow("5-hour", 46, now + timedelta(hours=2)),
+                    LimitWindow(
+                        "Luna Reserve",
+                        5,
+                        now + timedelta(days=5),
+                        identifier="base_model_inference.primary",
+                    ),
+                ],
+            )
+        }
+        window = self._window()
+        window.render(
+            RefreshResult(
+                UsageSnapshot(
+                    providers={"codex": ProviderUsage("codex", today_tokens=1_000)},
+                    scanned_at=now,
+                ),
+                limits,
+                {},
+                GameState(),
+                [],
+                None,
+                "Pokemon Egg",
+            )
+        )
+        titles = [
+            label.text()
+            for index in range(window.limits_list.count())
+            if (widget := window.limits_list.itemWidget(window.limits_list.item(index)))
+            for label in widget.findChildren(QLabel)
+        ]
+        self.assertTrue(any("Luna Reserve" in title for title in titles))
+        self.assertNotIn(
+            "Luna Reserve",
+            tray_tooltip(
+                RefreshResult(
+                    UsageSnapshot(
+                        providers={"codex": ProviderUsage("codex", today_tokens=1_000)}
+                    ),
+                    limits,
+                    {},
+                    GameState(),
+                    [],
+                    None,
+                    "Pokemon Egg",
+                )
+            ),
+        )
+
+    def test_offline_refresh_still_emits_a_renderable_result(self):
+        controller = TrayController.__new__(TrayController)
+        controller.state_lock = threading.Lock()
+        controller.state = GameState()
+        controller.store = Mock()
+        controller.api = Mock()
+        controller.api.item_sprite_path.return_value = None
+        controller.api.egg_sprite_path.return_value = None
+        controller.bridge = Mock()
+        controller._prefetch_collection = Mock()
+        now = datetime.now(timezone.utc)
+        offline_limits = {
+            "claude": ProviderLimits("claude", error="offline"),
+            "codex": ProviderLimits("codex", error="offline"),
+        }
+
+        with (
+            patch(
+                "poketokenbar_windows.ui.scan_all",
+                return_value=(UsageSnapshot(scanned_at=now), {}),
+            ),
+            patch(
+                "poketokenbar_windows.ui.fetch_all_limits",
+                return_value=offline_limits,
+            ),
+        ):
+            controller._refresh_worker()
+
+        controller.bridge.failed.emit.assert_not_called()
+        controller.bridge.refreshed.emit.assert_called_once()
+        result = controller.bridge.refreshed.emit.call_args.args[0]
+        self.assertEqual(result.limits, offline_limits)
+        self.assertIsNone(result.sprite_path)
+        self.assertIsNone(result.reveal_ball_path)
+
     def test_collection_has_counts_paging_and_representative_choice(self):
         catches = [CatchRecord(3, 1, [1, 2, 3], "rare", True, "Bold", "2026-08-30T10:00:00")]
         window = self._window(GameState(catches=catches))
@@ -269,6 +467,35 @@ class UITests(unittest.TestCase):
         self.assertIn("Rare 1", window.dex_counts.text())
         self.assertEqual(window.representative_combo.count(), 4)
         self.assertEqual(window.dex_page_label.text(), "Page 1 / 1")
+
+    def test_follow_current_dropdown_emits_the_automatic_selection(self):
+        state = GameState(
+            mon=MonState(1, [1, 2, 3], 1, 10, "common", False, "Hardy"),
+            catches=[
+                CatchRecord(2, 1, [1, 2, 3], "common", False, "Hardy", "2026-08-30T10:00:00")
+            ],
+            representative_species_id=1,
+            representative_is_shiny=False,
+        )
+        window = self._window(state)
+        window._render_collection()
+        selections = []
+        window.representative_changed.connect(selections.append)
+        self.assertGreater(window.representative_combo.currentIndex(), 0)
+
+        window.representative_combo.setCurrentIndex(0)
+
+        self.assertEqual(selections, [None])
+        species_index = next(
+            index
+            for index in range(1, window.representative_combo.count())
+            if window._representative_selection_data(
+                window.representative_combo.itemData(index)
+            )
+            == (2, False)
+        )
+        window.representative_combo.setCurrentIndex(species_index)
+        self.assertEqual(selections, [None, (2, False)])
 
     def test_tray_tooltip_respects_visibility_preferences(self):
         snapshot = UsageSnapshot(
