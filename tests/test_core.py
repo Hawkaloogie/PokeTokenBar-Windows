@@ -601,7 +601,7 @@ class FormattingTests(unittest.TestCase):
         self.assertIsNone(limit_forecast(unstable, now))
         self.assertEqual(
             limit_forecast_unavailable_reason(unstable, now),
-            "not enough data yet (<5% used)",
+            "not enough data yet",
         )
 
         weekly = LimitWindow(

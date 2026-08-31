@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QSettings, Qt
+from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QProgressBar, QScrollArea
 
 from poketokenbar_windows.models import (
@@ -20,7 +21,11 @@ from poketokenbar_windows.models import (
     UsageSnapshot,
 )
 from poketokenbar_windows.pokemon import EGG_HATCH_THRESHOLD, RARE_CANDY_XP
-from poketokenbar_windows.floating_pet import FloatingPetWindow, HoverCallout
+from poketokenbar_windows.floating_pet import (
+    AnimatedSpriteFrameStabilizer,
+    FloatingPetWindow,
+    HoverCallout,
+)
 from poketokenbar_windows.state import CatchRecord, GameState, MonState
 from poketokenbar_windows.ui import (
     DesktopPet,
@@ -229,6 +234,7 @@ class UITests(unittest.TestCase):
         widget = window.limits_list.itemWidget(window.limits_list.item(0))
         title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
         self.assertIn("forecast: not enough data yet", title)
+        self.assertNotIn("(<5% used)", title)
 
     def test_forecast_uses_short_safe_until_reset_copy(self):
         self.settings.setValue("limits_forecast_enabled", True)
@@ -324,10 +330,36 @@ class UITests(unittest.TestCase):
 
     def test_limit_only_hover_keeps_a_readable_horizontal_shape(self):
         hover = HoverCallout()
-        hover.set_text("Codex 5-hour: 46% left")
-        self.assertGreaterEqual(hover.label.width(), 180)
+        text = "Codex 5-hour: 46% left"
+        expected_width = min(
+            280,
+            hover.label.fontMetrics().horizontalAdvance(text) + 2,
+        )
+        hover.set_text(text)
+        self.assertEqual(hover.label.width(), expected_width)
+        self.assertLessEqual(hover.width(), hover.label.width() + 22)
         self.assertLess(hover.height(), 60)
         hover.close()
+
+    def test_severely_shrunken_animation_frame_keeps_last_normal_frame(self):
+        stabilizer = AnimatedSpriteFrameStabilizer()
+
+        normal = QPixmap(96, 96)
+        normal.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(normal)
+        painter.fillRect(8, 8, 80, 80, QColor("red"))
+        painter.end()
+
+        shrunken = QPixmap(96, 96)
+        shrunken.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(shrunken)
+        painter.fillRect(35, 28, 26, 40, QColor("red"))
+        painter.end()
+
+        stabilizer.filter(normal)
+        filtered = stabilizer.filter(shrunken)
+
+        self.assertEqual(stabilizer.visible_area(filtered), 80 * 80)
 
     def test_follow_current_companion_previews_the_active_pet_immediately(self):
         state = GameState(
@@ -424,6 +456,33 @@ class UITests(unittest.TestCase):
                 )
             ),
         )
+
+    def test_home_shows_luna_reserve_when_codex_omits_its_bucket(self):
+        now = datetime.now(timezone.utc)
+        window = self._window()
+        window.render(
+            RefreshResult(
+                UsageSnapshot(scanned_at=now),
+                {
+                    "codex": ProviderLimits(
+                        "codex",
+                        windows=[
+                            LimitWindow("Weekly", 17, now + timedelta(days=6))
+                        ],
+                    )
+                },
+                {},
+                GameState(),
+                [],
+                None,
+                "Pokemon Egg",
+            )
+        )
+
+        reserve_widget = window.limits_list.itemWidget(window.limits_list.item(1))
+        reserve_title = reserve_widget.findChild(QLabel).text()
+        self.assertEqual(reserve_title, "Codex · Luna Reserve · unavailable")
+        self.assertIsNone(reserve_widget.findChild(QProgressBar))
 
     def test_offline_refresh_still_emits_a_renderable_result(self):
         controller = TrayController.__new__(TrayController)

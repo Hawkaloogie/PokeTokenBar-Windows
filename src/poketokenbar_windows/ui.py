@@ -71,6 +71,7 @@ from .formatting import (
     companion_level_text,
     compact_tokens,
     highest_relevant_limit,
+    is_reserve_window,
     limit_alert_body,
     limit_forecast,
     limit_forecast_unavailable_reason,
@@ -90,6 +91,7 @@ from .floating_pet import (
     PET_ALERTS_KEY,
     PET_ENABLED_KEY,
     PET_SIZE_KEY,
+    AnimatedSpriteFrameStabilizer,
     FloatingPetController,
 )
 from .limits import fetch_all_limits
@@ -633,6 +635,7 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.api = api
         self.movie: QMovie | None = None
+        self.frame_stabilizer = AnimatedSpriteFrameStabilizer()
         self.reveal_timer = QTimer(self)
         self.reveal_timer.setInterval(70)
         self.reveal_timer.timeout.connect(self._advance_companion_reveal)
@@ -1293,26 +1296,37 @@ class MainWindow(QMainWindow):
         for key, limits in result.limits.items():
             label = PROVIDER_LABELS.get(key, key.title())
             ordered_windows = ordered_limit_windows(limits)
-            for index, row in enumerate(
-                provider_limit_rows(
-                    label,
-                    limits,
-                    display_mode=normalize_limit_display_mode(
-                        self.settings.value(
-                            LIMIT_DISPLAY_MODE_KEY,
-                            DEFAULT_LIMIT_DISPLAY_MODE,
-                        )
-                    ),
-                )
+            rows = provider_limit_rows(
+                label,
+                limits,
+                display_mode=normalize_limit_display_mode(
+                    self.settings.value(
+                        LIMIT_DISPLAY_MODE_KEY,
+                        DEFAULT_LIMIT_DISPLAY_MODE,
+                    )
+                ),
+            )
+            for window in ordered_windows:
+                any_limits = True
+                item = QListWidgetItem()
+                widget = self._limit_widget(label, window)
+                item.setSizeHint(widget.sizeHint())
+                self.limits_list.addItem(item)
+                self.limits_list.setItemWidget(item, widget)
+            if key.lower() == "codex" and not any(
+                is_reserve_window(window) for window in ordered_windows
             ):
                 any_limits = True
-                if index < len(ordered_windows):
-                    item = QListWidgetItem()
-                    widget = self._limit_widget(label, ordered_windows[index])
-                    item.setSizeHint(widget.sizeHint())
-                    self.limits_list.addItem(item)
-                    self.limits_list.setItemWidget(item, widget)
-                    continue
+                item = QListWidgetItem()
+                widget = self._unavailable_limit_widget(
+                    label,
+                    "Luna Reserve",
+                )
+                item.setSizeHint(widget.sizeHint())
+                self.limits_list.addItem(item)
+                self.limits_list.setItemWidget(item, widget)
+            for row in rows[len(ordered_windows):]:
+                any_limits = True
                 item = QListWidgetItem(row.text)
                 if row.urgency != "neutral":
                     item.setForeground(QColor("#b91c1c" if row.urgency == "critical" else "#b45309"))
@@ -1442,18 +1456,32 @@ class MainWindow(QMainWindow):
         layout.addWidget(bar)
         return widget
 
+    def _unavailable_limit_widget(self, provider: str, label: str) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(6, 4, 6, 4)
+        title = QLabel(f"{provider} · {label} · unavailable")
+        title.setWordWrap(True)
+        title.setToolTip(
+            f"{provider} did not report {label} in the latest refresh."
+        )
+        layout.addWidget(title)
+        return widget
+
     def _set_sprite(self, path: Path | None, *, egg: bool = False) -> None:
         if self.reveal_timer.isActive():
             self.reveal_timer.stop()
+        self.frame_stabilizer.reset()
         if self.movie is not None:
             self.movie.stop()
             self.movie = None
         if path is not None and path.exists():
             if path.suffix.lower() == ".gif":
-                movie = QMovie(str(path))
+                movie = QMovie(str(path), parent=self)
                 movie.setScaledSize(QSize(112, 112))
+                self.sprite.setMovie(QMovie())
                 self.sprite.setPixmap(QPixmap())
-                self.sprite.setMovie(movie)
+                movie.frameChanged.connect(self._render_sprite_movie_frame)
                 self.movie = movie
                 movie.start()
                 return
@@ -1466,6 +1494,13 @@ class MainWindow(QMainWindow):
                 return
         self.sprite.setMovie(QMovie())
         self.sprite.setPixmap(_egg_pixmap(112) if egg else _pokeball_pixmap(112))
+
+    def _render_sprite_movie_frame(self, *_args) -> None:
+        if self.movie is None:
+            return
+        pixmap = self.frame_stabilizer.filter(self.movie.currentPixmap())
+        if not pixmap.isNull():
+            self.sprite.setPixmap(pixmap)
 
     def start_companion_reveal(
         self,

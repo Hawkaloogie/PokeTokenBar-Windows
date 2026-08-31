@@ -18,7 +18,7 @@ A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/P
 - Separate Home, Collection, Bag, Shop, and Settings areas; paged Pokédex, Shiny sprite toggle, catch history, evolution line, and short in-app celebrations
 - Configurable light/dark/system theme, refresh interval, limit thresholds, used/remaining percentages, tray fields, notifications, Pokémon-name language, and save import/export
 - One upstream-style segmented Used/Remaining selector shared by Home, tray, and desktop-pet hover; compact surfaces use "left", Home gauges follow the selected mode, while warning/critical copy, thresholds, rewards, and risk colors always mean quota used
-- Optional timed-limit depletion forecasts with reset countdowns and explicit insufficient-data states; Codex Luna Reserve stays visible in Home but only replaces the regular allowance on tray/hover after regular usage is exhausted
+- Optional timed-limit depletion forecasts with reset countdowns and explicit insufficient-data states; Codex Luna Reserve stays visible in Home (as unavailable when Codex omits that bucket) but only replaces the regular allowance on tray/hover after regular usage is exhausted
 - Pokémon-style companion progress shown consistently as `Lv. 0`–`Lv. 100`
 - Deferred first window: real usage and limit data is rendered before the UI appears, followed by a Poké Ball reveal in both the main window and floating pet using a runtime-fetched PokeAPI item sprite with a drawn fallback; later representative changes use the same Poké Ball transition instead of a generic loader
 - Edge-triggered Rare Candy rewards when an official time window reaches 100%, with upstream-compatible first-snapshot seeding and stable identities that ignore one-second reset-time drift

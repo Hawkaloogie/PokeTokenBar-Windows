@@ -4,7 +4,16 @@ from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QPoint, QSize, Qt, QTimer, Signal, QObject
-from PySide6.QtGui import QColor, QContextMenuEvent, QMouseEvent, QMovie, QPainter, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QContextMenuEvent,
+    QMouseEvent,
+    QMovie,
+    QPainter,
+    QPen,
+    QPixmap,
+    QRegion,
+)
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QMenu, QVBoxLayout, QWidget
 
 from .formatting import DEFAULT_LIMIT_DISPLAY_MODE, LimitDisplayMode
@@ -115,6 +124,40 @@ def _loading_pokeball_pixmap(size: int, ball: QPixmap, frame: int) -> QPixmap:
     return canvas
 
 
+class AnimatedSpriteFrameStabilizer:
+    """Hide pathological GIF frames whose visible sprite suddenly collapses."""
+
+    def __init__(self, minimum_area_ratio: float = 0.45):
+        self.minimum_area_ratio = minimum_area_ratio
+        self.largest_visible_area = 0
+        self.last_stable_pixmap = QPixmap()
+
+    @staticmethod
+    def visible_area(pixmap: QPixmap) -> int:
+        if pixmap.isNull():
+            return 0
+        bounds = QRegion(pixmap.mask()).boundingRect()
+        return max(0, bounds.width()) * max(0, bounds.height())
+
+    def reset(self) -> None:
+        self.largest_visible_area = 0
+        self.last_stable_pixmap = QPixmap()
+
+    def filter(self, pixmap: QPixmap) -> QPixmap:
+        area = self.visible_area(pixmap)
+        if (
+            area > 0
+            and self.largest_visible_area > 0
+            and area < self.largest_visible_area * self.minimum_area_ratio
+            and not self.last_stable_pixmap.isNull()
+        ):
+            return self.last_stable_pixmap
+        if area > 0:
+            self.largest_visible_area = max(self.largest_visible_area, area)
+            self.last_stable_pixmap = QPixmap(pixmap)
+        return pixmap
+
+
 class FloatingPetWindow(QWidget):
     clicked = Signal()
     hide_requested = Signal()
@@ -137,6 +180,7 @@ class FloatingPetWindow(QWidget):
         self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.label.setStyleSheet("background: transparent;")
         self.movie: QMovie | None = None
+        self.frame_stabilizer = AnimatedSpriteFrameStabilizer()
         self.sprite_path: Path | None = None
         self.is_egg = False
         self.is_loading = True
@@ -172,6 +216,7 @@ class FloatingPetWindow(QWidget):
 
     def set_sprite(self, path: Path | None, *, is_egg: bool) -> None:
         self.reveal_timer.stop()
+        self.frame_stabilizer.reset()
         if self.movie is not None:
             self.movie.stop()
             self.movie.deleteLater()
@@ -193,6 +238,7 @@ class FloatingPetWindow(QWidget):
 
     def set_loading(self, ball_path: Path | None = None) -> None:
         self.reveal_timer.stop()
+        self.frame_stabilizer.reset()
         if self.movie is not None:
             self.movie.stop()
             self.movie.deleteLater()
@@ -225,6 +271,7 @@ class FloatingPetWindow(QWidget):
     ) -> None:
         """Play the same Poké Ball reveal directly on the floating pet."""
         self.reveal_timer.stop()
+        self.frame_stabilizer.reset()
         self.loading_timer.stop()
         if self.movie is not None:
             self.movie.stop()
@@ -341,7 +388,7 @@ class FloatingPetWindow(QWidget):
             return
         pixmap = QPixmap()
         if self.movie is not None:
-            pixmap = self.movie.currentPixmap()
+            pixmap = self.frame_stabilizer.filter(self.movie.currentPixmap())
         elif self.sprite_path is not None and self.sprite_path.exists():
             pixmap = QPixmap(str(self.sprite_path))
         if pixmap.isNull():
@@ -491,7 +538,7 @@ class HoverCallout(_CalloutBase):
         self.label.setText(text)
         longest_line = max(text.splitlines() or [""], key=len)
         natural_width = self.label.fontMetrics().horizontalAdvance(longest_line) + 2
-        width = max(180, min(280, natural_width))
+        width = max(1, min(280, natural_width))
         self.label.setFixedWidth(width)
         self.resize(self.sizeHint())
 

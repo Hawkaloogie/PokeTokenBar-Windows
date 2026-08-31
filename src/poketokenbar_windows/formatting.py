@@ -88,7 +88,7 @@ def limit_alert_body(
     return f"{provider_label} {window_label}: {limit_percent_text(used_percent, 'used')}."
 
 
-def _is_reserve_window(window: LimitWindow) -> bool:
+def is_reserve_window(window: LimitWindow) -> bool:
     identifier = (window.identifier or "").lower().replace("-", "_")
     label = window.label.lower()
     return identifier.startswith("base_model_inference") or "reserve" in label
@@ -99,8 +99,8 @@ def _compact_candidate_windows(status: ProviderLimits) -> list[LimitWindow]:
     if status.provider.lower() != "codex":
         return windows
 
-    regular = [window for window in windows if not _is_reserve_window(window)]
-    reserve = [window for window in windows if _is_reserve_window(window)]
+    regular = [window for window in windows if not is_reserve_window(window)]
+    reserve = [window for window in windows if is_reserve_window(window)]
     if not reserve:
         return regular
     if not regular:
@@ -180,7 +180,7 @@ def limit_forecast_unavailable_reason(
         return "window already reset"
     used = max(0.0, min(100.0, float(window.used_percent)))
     if used < 5:
-        return "not enough data yet (<5% used)"
+        return "not enough data yet"
     elapsed_seconds = window.duration_minutes * 60 - (reset - current).total_seconds()
     if elapsed_seconds < 60:
         return "collecting usage data"
