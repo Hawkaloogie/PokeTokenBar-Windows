@@ -296,7 +296,12 @@ def build_stylesheet(mode: str) -> str:
             border-radius: {RADIUS_CONTROL}px;
             background: {c['surface_alt']};
         }}
-        QProgressBar::chunk {{ border-radius: {RADIUS_CONTROL}px; }}
+        /* The chunk had a radius but NO background, so every filled bar
+           rendered invisible. Limit bars override this colour per severity. */
+        QProgressBar::chunk {{
+            background: {c['accent']};
+            border-radius: {RADIUS_CONTROL}px;
+        }}
 
         QScrollBar:vertical {{
             background: transparent; width: 10px; margin: 0;
