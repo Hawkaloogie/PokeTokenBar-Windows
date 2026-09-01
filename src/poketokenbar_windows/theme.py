@@ -39,41 +39,45 @@ TYPE_HERO = 25
 LINE_HEIGHT = 1.4
 
 DARK = {
-    "bg": "#16181d",
-    "surface": "#1d2027",
-    "surface_alt": "#242832",
-    "border": "#333a46",
-    "border_strong": "#454e5e",
-    "text": "#eef1f6",
-    "text_muted": "#9aa4b4",
-    "text_faint": "#6c7688",
-    "accent": "#3b82f6",
-    "accent_hover": "#2f6fd8",
+    # True neutral grey: R=G=B on every step. The previous #16181d had an
+    # elevated blue channel, which is what made it read as tinted near-black
+    # rather than a clean dark grey - and it cooled warm sprite colours sitting
+    # on top of it.
+    "bg": "#1a1a1a",            # app canvas
+    "surface": "#212121",       # cards
+    "surface_alt": "#292929",   # raised controls, hover, selected rows
+    "border": "#3a3a3a",        # hairlines
+    "border_strong": "#4d4d4d", # focus rings, emphasis
+    "text": "#f2f2f2",
+    "text_muted": "#a8a8a8",
+    "text_faint": "#7a7a7a",
+    "accent": "#3a74d6",
+    "accent_hover": "#4f8cff",
     "accent_text": "#ffffff",
-    "success": "#34d399",
-    "warning": "#fbbf24",
-    "danger": "#f87171",
-    "favourite": "#f59e0b",
-    "tooltip_bg": "#0f1116",
+    "success": "#3fb950",
+    "warning": "#d29922",
+    "danger": "#f85149",
+    "favourite": "#f0b429",
+    "tooltip_bg": "#333333",
 }
 
 LIGHT = {
-    "bg": "#f6f7f9",
+    "bg": "#f4f4f5",
     "surface": "#ffffff",
-    "surface_alt": "#eef0f4",
-    "border": "#dfe3ea",
-    "border_strong": "#c3cad6",
-    "text": "#1b1f27",
-    "text_muted": "#5b6472",
-    "text_faint": "#8b95a5",
+    "surface_alt": "#ebebed",
+    "border": "#dcdce0",
+    "border_strong": "#b9b9c0",
+    "text": "#1b1b1d",
+    "text_muted": "#5c5c63",
+    "text_faint": "#84848c",
     "accent": "#2563eb",
     "accent_hover": "#1d4ed8",
     "accent_text": "#ffffff",
     "success": "#15803d",
     "warning": "#b45309",
     "danger": "#dc2626",
-    "favourite": "#d97706",
-    "tooltip_bg": "#1b1f27",
+    "favourite": "#b45309",
+    "tooltip_bg": "#1b1b1d",
 }
 
 
@@ -100,12 +104,44 @@ def build_stylesheet(mode: str) -> str:
             padding: {SPACE_XS}px {SPACE_SM}px;
         }}
 
-        /* Layering: a card is a lighter surface, not a heavy outline. */
-        QFrame#SettingsCard, QFrame#Card {{
+        /* Elevation by TONE. A card is a lighter surface on a darker canvas;
+           it carries no outline, so screens stop reading as nested boxes. */
+        QFrame#Card, QFrame#SettingsCard {{
             background: {c['surface']};
-            border: 1px solid {c['border']};
+            border: none;
             border-radius: {RADIUS_CARD}px;
         }}
+        QFrame#CardRaised {{
+            background: {c['surface_alt']};
+            border: none;
+            border-radius: {RADIUS_CARD}px;
+        }}
+        /* An outline is reserved for the one card that is actually selected. */
+        QFrame#CardActive {{
+            background: {c['surface']};
+            border: 1px solid {c['accent']};
+            border-radius: {RADIUS_CARD}px;
+        }}
+        QFrame#Card QLabel, QFrame#SettingsCard QLabel,
+        QFrame#CardRaised QLabel, QFrame#CardActive QLabel {{
+            background: transparent;
+            border: none;
+        }}
+
+        /* Status badges, toned for a dark surface instead of pastel chips
+           borrowed from a light theme. */
+        QLabel#BadgeNeutral, QLabel#BadgeAccent, QLabel#BadgeSuccess {{
+            border-radius: {RADIUS_CONTROL}px;
+            padding: 2px {SPACE_SM}px;
+            font-weight: 600;
+        }}
+        QLabel#BadgeNeutral {{ background: {c['surface_alt']}; color: {c['text_muted']}; }}
+        QLabel#BadgeAccent  {{ background: {c['accent']};      color: {c['accent_text']}; }}
+        QLabel#BadgeSuccess {{ background: {c['success']};     color: {c['bg']}; }}
+
+        QLabel#Success {{ color: {c['success']}; background: transparent; border: none; }}
+        QLabel#Warning {{ color: {c['warning']}; background: transparent; border: none; }}
+        QLabel#Danger  {{ color: {c['danger']};  background: transparent; border: none; }}
         QGroupBox {{
             background: {c['surface']};
             border: 1px solid {c['border']};
@@ -122,8 +158,8 @@ def build_stylesheet(mode: str) -> str:
         }}
 
         QTabWidget::pane {{
-            border: 1px solid {c['border']};
-            border-radius: {RADIUS_CARD}px;
+            border: none;
+            border-top: 1px solid {c['border']};
             top: -1px;
         }}
         QTabBar::tab {{
@@ -192,6 +228,20 @@ def build_stylesheet(mode: str) -> str:
         }}
 
         QCheckBox {{ spacing: {SPACE_SM}px; padding: {SPACE_XS}px 0; }}
+        /* Without an explicit indicator rule Qt draws the NATIVE Windows
+           checkbox glyph, unthemed, on a dark background. Verified missing. */
+        QCheckBox::indicator {{
+            width: 16px; height: 16px;
+            border: 1px solid {c['border_strong']};
+            border-radius: {RADIUS_CONTROL}px;
+            background: {c['surface_alt']};
+        }}
+        QCheckBox::indicator:checked {{
+            background: {c['accent']};
+            border-color: {c['accent']};
+        }}
+        QCheckBox::indicator:hover {{ border-color: {c['accent']}; }}
+        QCheckBox:disabled {{ color: {c['text_faint']}; }}
 
         /* Muted text is a ROLE, not palette(mid) - that is a border colour and
            renders near-invisible on a dark background. */
@@ -204,7 +254,7 @@ def build_stylesheet(mode: str) -> str:
 
         QListWidget {{
             background: transparent;
-            border: 1px solid {c['border']};
+            border: none;
             border-radius: {RADIUS_CARD}px;
             padding: {SPACE_XS}px;
         }}
@@ -239,3 +289,32 @@ def build_stylesheet(mode: str) -> str:
 
 def muted(mode: str) -> str:
     return palette(mode)["text_muted"]
+
+
+def apply_base_palette(app, mode: str) -> None:
+    """Set a QPalette matching the theme.
+
+    The stylesheet wins wherever it applies, but Qt falls back to the palette
+    for anything it draws natively - system menus, some dialogs, disabled text.
+    Without this those render light-on-light against a dark app.
+    """
+    from PySide6.QtGui import QColor, QPalette
+
+    c = palette(mode)
+    role = QPalette.ColorRole
+    group = QPalette.ColorGroup
+    result = QPalette()
+    for target, key in (
+        (role.Window, "bg"), (role.Base, "surface"),
+        (role.AlternateBase, "surface_alt"), (role.Button, "surface_alt"),
+        (role.ToolTipBase, "tooltip_bg"), (role.Highlight, "accent"),
+        (role.WindowText, "text"), (role.Text, "text"),
+        (role.ButtonText, "text"), (role.ToolTipText, "text"),
+        (role.HighlightedText, "accent_text"), (role.PlaceholderText, "text_faint"),
+        (role.Mid, "border"), (role.Dark, "border_strong"),
+        (role.Light, "surface_alt"), (role.Midlight, "surface_alt"),
+    ):
+        result.setColor(target, QColor(c[key]))
+    for target in (role.WindowText, role.Text, role.ButtonText):
+        result.setColor(group.Disabled, target, QColor(c["text_faint"]))
+    app.setPalette(result)

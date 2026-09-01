@@ -73,6 +73,11 @@ def _claim_single_instance(app, on_second_launch):
     return server
 
 
+def _stored_theme() -> str:
+    from PySide6.QtCore import QSettings
+    return str(QSettings("PokeTokenBar", "PokeTokenBar").value("theme", "system"))
+
+
 def main() -> int:
     _configure_windows_identity()
     _hide_console_window()
@@ -92,6 +97,12 @@ def main() -> int:
     app.setApplicationDisplayName(APP_NAME)
     app.setOrganizationName("PokeTokenBar")
     app.setQuitOnLastWindowClosed(False)
+
+    # A matching QPalette underneath the stylesheet: QSS wins wherever it
+    # applies, but system-drawn bits (native menus, some dialogs) fall back to
+    # the palette, and a light default there looks broken on a dark app.
+    from .theme import apply_base_palette
+    apply_base_palette(app, str(_stored_theme()))
 
     controller = TrayController(app)
 

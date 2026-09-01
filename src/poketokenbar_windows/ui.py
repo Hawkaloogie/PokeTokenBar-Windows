@@ -518,9 +518,13 @@ def _set_autostart(enabled: bool) -> None:
 class MetricCard(QFrame):
     def __init__(self, title: str):
         super().__init__()
-        self.setFrameShape(QFrame.Shape.StyledPanel)
+        # Previously fell through to Qt's native panel chrome, so the most
+        # prominent thing on Home ignored the app theme entirely.
+        self.setObjectName("Card")
+        self.setFrameShape(QFrame.Shape.NoFrame)
         layout = QVBoxLayout(self)
         self.title = QLabel(title)
+        self.title.setObjectName("Muted")
         self.value = QLabel("-")
         font = self.value.font()
         font.setPointSize(font.pointSize() + 4)
@@ -921,7 +925,9 @@ class MainWindow(QMainWindow):
         self.celebration_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.celebration_label.setWordWrap(True)
         self.celebration_label.setStyleSheet(
-            "QLabel { background: #fef3c7; color: #92400e; border-radius: 8px; padding: 10px; font-weight: bold; }"
+            f"QLabel {{ background: {palette(self._theme_name())['surface_alt']}; "
+            f"color: {palette(self._theme_name())['warning']}; border-radius: 8px; "
+            "padding: 10px; font-weight: bold; }"
         )
         self.celebration_label.hide()
         layout.addWidget(self.celebration_label)
@@ -930,7 +936,7 @@ class MainWindow(QMainWindow):
         self.sprite = QLabel()
         self.sprite.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sprite.setFixedSize(128, 128)
-        self.sprite.setStyleSheet("QLabel { background: palette(base); border: 1px solid palette(mid); border-radius: 8px; }")
+        self.sprite.setObjectName("CardRaised")
         self.sprite.setPixmap(_egg_pixmap(112))
         hero.addWidget(self.sprite)
         meta = QVBoxLayout()
@@ -1096,12 +1102,15 @@ class MainWindow(QMainWindow):
         main_card = QFrame()
         main_card.setFrameShape(QFrame.Shape.StyledPanel)
         main_card.setStyleSheet(
-            "QFrame { border: 2px solid #2563eb; border-radius: 8px; }"
+            f"QFrame {{ border: 1px solid {palette(self._theme_name())['accent']}; "
+            "border-radius: 8px; }"
         )
         main_layout = QVBoxLayout(main_card)
         heading = QLabel("MAIN")
         hf = heading.font(); hf.setBold(True); heading.setFont(hf)
-        heading.setStyleSheet("color: #2563eb; border: none;")
+        heading.setStyleSheet(
+            f"color: {palette(self._theme_name())['accent']}; border: none;"
+        )
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(heading)
         main_sprite = self._party_sprite(main, 128)
@@ -1133,9 +1142,7 @@ class MainWindow(QMainWindow):
             member = self.state.party[slot] if slot < len(self.state.party) else None
             card = QFrame()
             card.setFrameShape(QFrame.Shape.StyledPanel)
-            card.setStyleSheet(
-                "QFrame { border: 1px solid palette(mid); border-radius: 8px; }"
-            )
+            card.setObjectName("Card")
             card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             card_layout = QVBoxLayout(card)
             card_layout.addWidget(self._party_sprite(member, 56))
@@ -1271,7 +1278,9 @@ class MainWindow(QMainWindow):
         for position, stage_id in enumerate(path):
             if position:
                 arrow = QLabel("→")
-                arrow.setStyleSheet("color: #9aa4b4; font-size: 20px;")
+                arrow.setStyleSheet(
+            "color: {c}; font-size: 20px;".replace("{c}", palette(self._theme_name())["text_muted"])
+        )
                 row.addWidget(arrow)
             have = stage_id in owned
             cell = QVBoxLayout()
@@ -1296,7 +1305,8 @@ class MainWindow(QMainWindow):
             status = QLabel("Collected" if have else "Not yet")
             status.setAlignment(Qt.AlignmentFlag.AlignCenter)
             status.setStyleSheet(
-                "color: #34d399;" if have else "color: #9aa4b4;"
+                f"color: {palette(self._theme_name())['success']};" if have
+                else f"color: {palette(self._theme_name())['text_muted']};"
             )
             cell.addWidget(status)
             row.addLayout(cell)
@@ -1313,6 +1323,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(buttons)
         dialog.exec()
 
+    def _theme_name(self) -> str:
+        return str(self.settings.value("theme", "system"))
+
     def _favourite_star(self, catch_index: int, favourite: bool) -> QPushButton:
         """Star toggle bound to a Pokedex entry, usable from any view."""
         # The STAR itself carries the state: a solid amber glyph when
@@ -1327,7 +1340,8 @@ class MainWindow(QMainWindow):
             if favourite else
             "Favourite this Pokemon so it can never be traded away"
         )
-        colour = "#f59e0b" if favourite else "#9aa4b4"
+        c = palette(self._theme_name())
+        colour = c["favourite"] if favourite else c["text_muted"]
         star.setStyleSheet(
             "QPushButton { background: transparent; border: none; padding: 0; "
             f"font-size: 19px; color: {colour}; " + "}"
@@ -1397,9 +1411,7 @@ class MainWindow(QMainWindow):
         for index, offer in enumerate(offers):
             card = QFrame()
             card.setFrameShape(QFrame.Shape.StyledPanel)
-            card.setStyleSheet(
-                "QFrame { border: 1px solid palette(mid); border-radius: 8px; }"
-            )
+            card.setObjectName("Card")
             row = QHBoxLayout(card)
 
             sprite = QLabel()
@@ -1523,7 +1535,9 @@ class MainWindow(QMainWindow):
         self.bag_empty = QLabel("Your bag is empty. Earn tokens, then visit the Shop.")
         self.bag_empty.setWordWrap(True)
         self.bag_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.bag_empty.setStyleSheet("color: #9aa4b4; padding: 18px;")
+        self.bag_empty.setStyleSheet(
+            "color: {c}; padding: 18px;".replace("{c}", palette(self._theme_name())["text_muted"])
+        )
         layout.addWidget(self.bag_empty)
         actions = QGridLayout()
         self.use_candy_btn = QPushButton("Use Rare Candy")
@@ -1535,7 +1549,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(actions)
         self.action_feedback = QLabel("")
         self.action_feedback.setWordWrap(True)
-        self.action_feedback.setStyleSheet("color: #166534; padding: 8px 0;")
+        self.action_feedback.setObjectName("Success")
         layout.addWidget(self.action_feedback)
         layout.addStretch(1)
         return root
@@ -1751,7 +1765,9 @@ class MainWindow(QMainWindow):
         save_row = QHBoxLayout(footer)
         save_row.setContentsMargins(20, 12, 20, 12)
         self.settings_dirty_label = QLabel("")
-        self.settings_dirty_label.setStyleSheet("color: #d97706; border: none;")
+        self.settings_dirty_label.setStyleSheet(
+            "color: {c}; border: none;".replace("{c}", palette(self._theme_name())["warning"])
+        )
         save_row.addWidget(self.settings_dirty_label)
         save_row.addStretch(1)
         self.settings_revert_button = QPushButton("Discard")
@@ -1831,7 +1847,9 @@ class MainWindow(QMainWindow):
             "everything you already collected cheap in hindsight. You are warned "
             "first. Raising the difficulty is always free and keeps everything."
         )
-        self.pace_note.setStyleSheet("color: #d97706; border: none;")
+        self.pace_note.setStyleSheet(
+            "color: {c}; border: none;".replace("{c}", palette(self._theme_name())["warning"])
+        )
         pace.addWidget(self.pace_note)
 
         danger = self._settings_card(
@@ -1968,10 +1986,11 @@ class MainWindow(QMainWindow):
         for button, *_ in buttons:
             button.setMinimumWidth(widest)
         first, last = buttons[0][2], buttons[-1][2]
+        c = palette(str(self.settings.value("theme", "system")))
         frame.setStyleSheet(
             f"QPushButton[{prop}Segment='true'] {{"
-            "  border: 1px solid palette(mid); padding: 6px 12px; margin: 0;"
-            "  background: palette(button);"
+            f"  border: 1px solid {c['border']}; padding: 6px 12px; margin: 0;"
+            f"  background: {c['surface_alt']}; color: {c['text_muted']};"
             "}"
             f"QPushButton#{first} {{"
             "  border-top-left-radius: 7px; border-bottom-left-radius: 7px;"
@@ -1981,8 +2000,8 @@ class MainWindow(QMainWindow):
             "  border-top-right-radius: 7px; border-bottom-right-radius: 7px;"
             "}"
             f"QPushButton[{prop}Segment='true']:checked {{"
-            "  background: #2563eb; color: white; border-color: #2563eb;"
-            "  font-weight: 600;"
+            f"  background: {c['accent']}; color: {c['accent_text']};"
+            f"  border-color: {c['accent']}; font-weight: 600;"
             "}"
         )
         return frame, group
@@ -2640,7 +2659,9 @@ class MainWindow(QMainWindow):
         title.setWordWrap(True)
         reset_line = QLabel(detail)
         reset_line.setWordWrap(True)
-        reset_line.setStyleSheet("color: #9aa4b4; font-size: 11px;")
+        reset_line.setStyleSheet(
+            "color: {c}; font-size: 11px;".replace("{c}", palette(self._theme_name())["text_muted"])
+        )
         bar = QProgressBar()
         bar.setRange(0, 100)
         displayed = window.remaining_percent if display_mode == "remaining" else used
@@ -2657,7 +2678,8 @@ class MainWindow(QMainWindow):
         critical = normalize_critical_threshold(
             self.settings.value(CRITICAL_THRESHOLD_KEY, DEFAULT_CRITICAL_THRESHOLD)
         )
-        color = "#16a34a" if used < warning else ("#d97706" if used < critical else "#dc2626")
+        c = palette(self._theme_name())
+        color = c["success"] if used < warning else (c["warning"] if used < critical else c["danger"])
         bar.setStyleSheet(f"QProgressBar::chunk {{ background: {color}; border-radius: 4px; }}")
         layout.addWidget(title)
         layout.addWidget(reset_line)
@@ -2918,7 +2940,7 @@ class MainWindow(QMainWindow):
     def _dex_cell(self, species_id: int, *, shiny: bool) -> QFrame:
         cell = QFrame()
         cell.setFrameShape(QFrame.Shape.StyledPanel)
-        cell.setStyleSheet("QFrame { border: 1px solid palette(mid); border-radius: 8px; }")
+        cell.setObjectName("Card")
         layout = QVBoxLayout(cell)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sprite = QLabel()
@@ -2943,7 +2965,9 @@ class MainWindow(QMainWindow):
         if favourite_index >= 0:
             starred = QLabel("★ Favourite")
             starred.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            starred.setStyleSheet("color: #f59e0b; border: none;")
+            starred.setStyleSheet(
+            "color: {c}; border: none;".replace("{c}", palette(self._theme_name())["favourite"])
+        )
             layout.addWidget(starred)
         generation = QLabel(generation_label(species_id))
         generation.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2974,7 +2998,7 @@ class MainWindow(QMainWindow):
     def _catch_card(self, catch, is_current: bool) -> QFrame:
         card = QFrame()
         card.setFrameShape(QFrame.Shape.StyledPanel)
-        card.setStyleSheet("QFrame { border: 1px solid palette(mid); border-radius: 8px; }")
+        card.setObjectName("Card")
         layout = QVBoxLayout(card)
         path_ids = catch.path_ids or [catch.species_id]
         owned_index = self.state.mon.stage_index if (is_current and self.state.mon is not None) else len(path_ids) - 1
@@ -2991,11 +3015,11 @@ class MainWindow(QMainWindow):
         header.addWidget(title)
         header.addStretch(1)
         owned_badge = QLabel("Owned")
-        owned_badge.setStyleSheet("QLabel { background: #dcfce7; color: #166534; border-radius: 8px; padding: 2px 8px; }")
+        owned_badge.setObjectName("BadgeNeutral")
         header.addWidget(owned_badge)
         if is_current:
             badge = QLabel("Current")
-            badge.setStyleSheet("QLabel { background: #dbeafe; color: #1d4ed8; border-radius: 8px; padding: 2px 8px; }")
+            badge.setObjectName("BadgeAccent")
             header.addWidget(badge)
         if catch.is_shiny:
             header.addWidget(QLabel("✨"))
@@ -3022,7 +3046,9 @@ class MainWindow(QMainWindow):
         for index, species_id in enumerate(path_ids):
             if index:
                 arrow = QLabel("→")
-                arrow.setStyleSheet("color: #9aa4b4; font-size: 16px;")
+                arrow.setStyleSheet(
+            "color: {c}; font-size: 16px;".replace("{c}", palette(self._theme_name())["text_muted"])
+        )
                 line.addWidget(arrow)
             have = index <= owned_index
             current_stage = index == owned_index
@@ -3041,13 +3067,16 @@ class MainWindow(QMainWindow):
                 pix = _muted_pixmap(pix)
             sprite.setPixmap(pix)
             if current_stage:
-                sprite.setStyleSheet("QLabel { background: #dcfce7; border: 2px solid #16a34a; border-radius: 8px; }")
+                sprite.setObjectName("CardActive")
             elif not have:
-                sprite.setStyleSheet("QLabel { background: #f3f4f6; border-radius: 8px; }")
+                sprite.setObjectName("CardRaised")
             if have:
                 stage_name = QLabel(self.api.localized_name(species_id, self.state.language))
                 status = QLabel("You have this" if current_stage else "Previous form")
-                status.setStyleSheet("color: #34d399;" if current_stage else "color: #9aa4b4;")
+                status.setStyleSheet(
+                    f"color: {palette(self._theme_name())['success']};" if current_stage
+                    else f"color: {palette(self._theme_name())['text_muted']};"
+                )
             else:
                 stage_name = QLabel("???")
                 status = QLabel("Not owned")
