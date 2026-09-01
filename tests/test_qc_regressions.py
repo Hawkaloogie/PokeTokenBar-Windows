@@ -227,3 +227,57 @@ class MiscRegressions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SetupRegressions(unittest.TestCase):
+    """The first-run questionnaire must never disturb an existing game."""
+
+    def test_a_save_predating_setup_is_treated_as_already_answered(self) -> None:
+        def mutate(raw):
+            raw.pop("setup_completed", None)
+
+        loaded = _save_then_corrupt(mutate)
+        self.assertTrue(
+            loaded.setup_completed,
+            "an existing player would be ambushed by the setup dialog",
+        )
+
+    def test_a_genuinely_empty_save_still_asks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.json"
+            store = StateStore(path)
+            store.save(GameState())
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw.pop("setup_completed", None)
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            self.assertFalse(store.load().setup_completed)
+
+    def test_seeding_a_starter_benches_the_existing_main_instead_of_erasing_it(self) -> None:
+        from poketokenbar_windows.state import start_with_species
+
+        class StubAPI:
+            def hatch_species(self, species_id, shiny_charm=False):
+                from poketokenbar_windows.pokemon import HatchResult
+                return HatchResult(species_id, [species_id], "common", "Hardy", False, 200)
+
+        state = GameState()
+        state.mon = mon(203, used_at_stage=999)
+        self.assertTrue(start_with_species(state, 4, StubAPI()))
+        self.assertEqual(state.mon.base_id, 4)
+        self.assertEqual(state.party[0].base_id, 203)
+        self.assertEqual(state.party[0].used_at_stage, 999)
+
+    def test_a_starter_is_refused_rather_than_erasing_when_the_bench_is_full(self) -> None:
+        from poketokenbar_windows.state import start_with_species
+
+        class StubAPI:
+            def hatch_species(self, species_id, shiny_charm=False):
+                from poketokenbar_windows.pokemon import HatchResult
+                return HatchResult(species_id, [species_id], "common", "Hardy", False, 200)
+
+        state = GameState()
+        state.mon = mon(203)
+        for index in range(PARTY_BENCH_SIZE):
+            state.party[index] = mon(index + 300)
+        self.assertFalse(start_with_species(state, 4, StubAPI()))
+        self.assertEqual(state.mon.base_id, 203)

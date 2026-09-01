@@ -39,6 +39,9 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QRadioButton,
     QSizePolicy,
     QFileDialog,
     QFrame,
@@ -130,6 +133,7 @@ from .pokemon import (
     egg_price,
     generation_label,
     normalize_generation,
+    starters_for,
     phase_threshold,
 )
 from .state import (
@@ -147,6 +151,8 @@ from .state import (
     clear_party_slot,
     party_members,
     representative_subject,
+    reset_game_state,
+    start_with_species,
     set_generation_filter,
     swap_main,
     set_representative,
@@ -645,6 +651,89 @@ class DesktopPet(QWidget):
         super().resizeEvent(event)
 
 
+
+class SetupDialog(QDialog):
+    """First-run questionnaire: which generations, and how to begin.
+
+    Shown once on a fresh game, and again after a reset. Everything it asks is
+    changeable later in Settings - nothing here is a one-way door.
+    """
+
+    RANDOM = "random"
+
+    def __init__(self, api, language: str = "en", parent=None):
+        super().__init__(parent)
+        self.api = api
+        self.language = language
+        self.setWindowTitle("Welcome to PokeTokenBar")
+        self.setModal(True)
+        layout = QVBoxLayout(self)
+
+        intro = QLabel(
+            "Your Claude Code tokens raise a Pokemon. Two quick choices before "
+            "you start - you can change both later in Settings."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        gen_label = QLabel("Which generations should hatch?")
+        gf = gen_label.font(); gf.setBold(True); gen_label.setFont(gf)
+        layout.addWidget(gen_label)
+        self.generation_combo = QComboBox()
+        self.generation_combo.addItem("All generations (1-5)", None)
+        for number, region, low, high in GENERATIONS:
+            self.generation_combo.addItem(f"Gen {number} - {region} (#{low}-{high})", number)
+        self.generation_combo.currentIndexChanged.connect(lambda _i: self._reload_starters())
+        layout.addWidget(self.generation_combo)
+
+        start_label = QLabel("How do you want to start?")
+        sf = start_label.font(); sf.setBold(True); start_label.setFont(sf)
+        layout.addWidget(start_label)
+
+        self.starter_radio = QRadioButton("Pick an original starter")
+        self.starter_radio.setChecked(True)
+        layout.addWidget(self.starter_radio)
+        self.starter_combo = QComboBox()
+        layout.addWidget(self.starter_combo)
+
+        self.random_radio = QRadioButton("Surprise me with a random Pokemon")
+        layout.addWidget(self.random_radio)
+        self.starter_radio.toggled.connect(self.starter_combo.setEnabled)
+
+        note = QLabel(
+            "Only generations 1-5 are available - the animated sprites this app "
+            "uses do not cover later generations."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: palette(mid);")
+        layout.addWidget(note)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Start")
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+        self._reload_starters()
+
+    def _reload_starters(self) -> None:
+        self.starter_combo.clear()
+        for species_id in starters_for(self.generation_combo.currentData()):
+            name = self.api.localized_name(species_id, self.language)
+            self.starter_combo.addItem(f"#{species_id:03d} {name}", species_id)
+        # "All generations" offers all fifteen starters; a single generation
+        # offers its own three.
+        self.starter_combo.setEnabled(self.starter_radio.isChecked())
+
+    def chosen_generation(self):
+        return self.generation_combo.currentData()
+
+    def chosen_start(self):
+        """Species id to begin with, or SetupDialog.RANDOM."""
+        if self.random_radio.isChecked():
+            return self.RANDOM
+        return self.starter_combo.currentData()
+
+
 class MainWindow(QMainWindow):
     refresh_requested = Signal()
     pet_visibility_changed = Signal(bool)
@@ -654,6 +743,7 @@ class MainWindow(QMainWindow):
     party_swap_requested = Signal(int)
     party_clear_requested = Signal(int)
     party_assign_requested = Signal(int, object)
+    reset_requested = Signal()
     preferences_changed = Signal()
     representative_changed = Signal(object)
     language_changed = Signal(str)
@@ -1179,6 +1269,20 @@ class MainWindow(QMainWindow):
         self._set_pet_controls_enabled(self.pet_check.isChecked())
         layout.addWidget(desktop)
 
+        danger_group = QGroupBox("Start over")
+        danger_layout = QVBoxLayout(danger_group)
+        danger_note = QLabel(
+            "Resetting clears your Pokemon, party, Pokedex and wallet, then asks "
+            "the setup questions again. Tokens already spent are not re-credited."
+        )
+        danger_note.setWordWrap(True)
+        danger_note.setStyleSheet("color: palette(mid);")
+        danger_layout.addWidget(danger_note)
+        self.reset_button = QPushButton("Reset app and start over...")
+        self.reset_button.setToolTip("Wipe this save and re-run the setup questions")
+        self.reset_button.clicked.connect(self.reset_requested.emit)
+        danger_layout.addWidget(self.reset_button)
+
         hatch_group = QGroupBox("Hatching")
         hatch_layout = QVBoxLayout(hatch_group)
         generation_row = QHBoxLayout()
@@ -1204,6 +1308,7 @@ class MainWindow(QMainWindow):
         self.generation_note.setStyleSheet("color: palette(mid);")
         hatch_layout.addWidget(self.generation_note)
         layout.addWidget(hatch_group)
+        layout.addWidget(danger_group)
 
         tray_group = QGroupBox("Tray tooltip")
         tray_layout = QVBoxLayout(tray_group)
@@ -2254,12 +2359,14 @@ class TrayController(QObject):
         self.window.party_swap_requested.connect(self._swap_main)
         self.window.party_clear_requested.connect(self._clear_party_slot)
         self.window.party_assign_requested.connect(self._assign_party_slot)
+        self.window.reset_requested.connect(self._reset_app)
         self.window.preferences_changed.connect(self._preferences_changed)
         self.window.representative_changed.connect(self._set_representative)
         self.window.language_changed.connect(self._set_language)
         self.window.export_requested.connect(self._export_state)
         self.window.import_requested.connect(self._import_state)
         self._wire_shop_buttons()
+        QTimer.singleShot(0, self.run_setup_if_needed)
         self._apply_theme()
 
         self.tray = QSystemTrayIcon(_pokeball_icon(), self)
@@ -2362,6 +2469,76 @@ class TrayController(QObject):
 
     def _set_pet_snap(self, enabled: bool) -> None:
         self.floating_pet.set_snap_enabled(bool(enabled))
+
+    def run_setup_if_needed(self) -> None:
+        """Ask the first-run questions on a fresh game (or after a reset)."""
+        if self.state.setup_completed:
+            return
+        self._run_setup()
+
+    def _run_setup(self) -> None:
+        dialog = SetupDialog(self.api, self.state.language, self.window)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            # Dismissing without choosing leaves a normal all-generations game
+            # rather than asking again on every launch.
+            choice_generation, choice_start = None, SetupDialog.RANDOM
+        else:
+            choice_generation = dialog.chosen_generation()
+            choice_start = dialog.chosen_start()
+
+        try:
+            with self.state_lock:
+                candidate = copy.deepcopy(self.state)
+                set_generation_filter(candidate, choice_generation)
+                if choice_start == SetupDialog.RANDOM:
+                    hatched = self.api.hatch(generation=candidate.generation_filter)
+                    start_with_species(candidate, hatched.base_id, self.api)
+                elif choice_start is not None:
+                    start_with_species(candidate, int(choice_start), self.api)
+                candidate.setup_completed = True
+                self.store.save(candidate)
+                self.state = candidate
+        except Exception:  # noqa: BLE001
+            QMessageBox.warning(
+                self.window,
+                "PokeTokenBar",
+                "Setup could not be completed. Starting a normal game instead.",
+            )
+            return
+        self.window.set_state(self.state)
+        self.floating_pet.set_loading()
+        preview = self._representative_preview()
+        if preview is not None:
+            self.last_result = preview
+            self._update_companion_surfaces(preview)
+        self.refresh()
+
+    def _reset_app(self) -> None:
+        confirm = QMessageBox.warning(
+            self.window,
+            "Reset PokeTokenBar",
+            "This deletes your Pokemon, party, Pokedex, inventory and wallet, "
+            "then asks the setup questions again." + (chr(10) * 2)
+            + "This cannot be undone. "
+            "Tokens you have already spent are not re-credited." + (chr(10) * 2)
+            + "Reset now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            with self.state_lock:
+                fresh = reset_game_state(self.state)
+                self.store.save(fresh)
+                self.state = fresh
+        except Exception:  # noqa: BLE001
+            QMessageBox.warning(
+                self.window, "PokeTokenBar", "The reset failed. Your save was not changed."
+            )
+            return
+        self.window.set_state(self.state)
+        self._run_setup()
 
     def _mutate_party(self, action, failure: str) -> None:
         """Apply a party change on a copy, persist it, then refresh the surfaces.

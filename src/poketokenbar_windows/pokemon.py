@@ -49,6 +49,25 @@ GENERATION_MIN_ID = GENERATIONS[0][2]
 GENERATION_MAX_ID = GENERATIONS[-1][3]
 
 
+# The three original starter Pokemon of each generation, in Pokedex order
+# (grass, fire, water) - the choice a real game opens with.
+STARTERS: dict[int, list[int]] = {
+    1: [1, 4, 7],        # Bulbasaur, Charmander, Squirtle
+    2: [152, 155, 158],  # Chikorita, Cyndaquil, Totodile
+    3: [252, 255, 258],  # Treecko, Torchic, Mudkip
+    4: [387, 390, 393],  # Turtwig, Chimchar, Piplup
+    5: [495, 498, 501],  # Snivy, Tepig, Oshawott
+}
+
+
+def starters_for(generation: int | None) -> list[int]:
+    """Starter species for a generation, or every generation's starters."""
+    normalized = normalize_generation(generation)
+    if normalized is not None:
+        return list(STARTERS.get(normalized, []))
+    return [species for gen in sorted(STARTERS) for species in STARTERS[gen]]
+
+
 def generation_of(species_id: int) -> int | None:
     """Generation number for a species ID, or None when outside the pool."""
     for number, _region, low, high in GENERATIONS:
@@ -202,6 +221,41 @@ class PokeAPIClient:
         child = random.choice(supported)
         suffix = self._random_path(child)
         return [species_id] + suffix
+
+    def hatch_species(self, species_id: int, shiny_charm: bool = False) -> HatchResult:
+        """Build a companion for one chosen species - used by the setup starter.
+
+        Same shape as hatch(), but the species is picked by the player rather
+        than rolled, so no capture-rate weighting is applied.
+        """
+        species = self.species(species_id)
+        capture_rate = int(species.get("capture_rate") or 0)
+        rarity = rarity_from(
+            capture_rate,
+            bool(species.get("is_legendary")),
+            bool(species.get("is_mythical")),
+        )
+        path = [species_id]
+        chain_ref = species.get("evolution_chain")
+        if isinstance(chain_ref, dict) and isinstance(chain_ref.get("url"), str):
+            try:
+                chain = self.evolution_chain(chain_ref["url"])
+                root = chain.get("chain")
+                if isinstance(root, dict):
+                    candidate = self._random_path(root)
+                    if candidate and species_id in candidate:
+                        path = candidate[candidate.index(species_id):]
+            except Exception:  # noqa: BLE001
+                path = [species_id]
+        denominator = SHINY_CHARM_DENOMINATOR if shiny_charm else SHINY_DENOMINATOR
+        return HatchResult(
+            base_id=species_id,
+            path_ids=path,
+            rarity=rarity,
+            nature=random.choice(NATURES),
+            is_shiny=random.randrange(denominator) == 0,
+            capture_rate=capture_rate,
+        )
 
     def hatch(
         self,

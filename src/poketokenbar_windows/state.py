@@ -91,6 +91,9 @@ class GameState:
     party: list[MonState | None] = field(
         default_factory=lambda: [None] * PARTY_BENCH_SIZE
     )
+    # False until the first-run questionnaire has been answered. Reset clears
+    # it so the questionnaire runs again on the next launch.
+    setup_completed: bool = False
 
     @property
     def wallet(self) -> int:
@@ -360,6 +363,11 @@ class StateStore:
                 candy_feature_seeded=bool(raw.get("candy_feature_seeded", False)),
                 generation_filter=normalize_generation(raw.get("generation_filter")),
                 party=party,
+                # A save written before the questionnaire existed is treated as
+                # already answered, so an existing player is never ambushed by it.
+                setup_completed=bool(
+                    raw.get("setup_completed", bool(mon is not None or catches))
+                ),
             )
             for key in ("rare_candy", "mint", "shiny_charm"):
                 state.inventory.setdefault(key, 0)
@@ -693,6 +701,51 @@ def assign_party_slot(state: GameState, slot: int, catch: CatchRecord) -> bool:
     if catch_in_use(state, catch, ignore_slot=slot):
         return False
     state.party[slot] = party_slot_from_catch(catch)
+    normalize_representative(state)
+    return True
+
+
+def reset_game_state(state: GameState) -> GameState:
+    """Return a brand-new game, preserving nothing.
+
+    The token baseline is deliberately NOT carried over: a fresh game must not
+    retroactively credit tokens burned before it started, exactly as a fresh
+    install behaves.
+    """
+    return GameState()
+
+
+def start_with_species(state: GameState, species_id: int, api: PokeAPIClient) -> bool:
+    """Seed the main slot with a chosen starter instead of an egg."""
+    try:
+        hatched = api.hatch_species(species_id, shiny_charm=state.shiny_charm_active)
+    except Exception:  # noqa: BLE001
+        return False
+    if state.mon is not None:
+        # Bench whoever is already in the main slot rather than overwriting
+        # them; if the bench is full the starter is refused outright.
+        if add_to_party(state, state.mon) is None:
+            return False
+        state.mon = None
+    state.mon = MonState(
+        base_id=hatched.base_id,
+        path_ids=hatched.path_ids,
+        stage_index=0,
+        used_at_stage=0,
+        rarity=hatched.rarity,
+        is_shiny=hatched.is_shiny,
+        nature=hatched.nature,
+    )
+    state.egg_usage = 0
+    state.catches.append(CatchRecord(
+        species_id=hatched.base_id,
+        base_id=hatched.base_id,
+        path_ids=list(hatched.path_ids),
+        rarity=hatched.rarity,
+        is_shiny=hatched.is_shiny,
+        nature=hatched.nature,
+        caught_at=datetime.now().astimezone().isoformat(),
+    ))
     normalize_representative(state)
     return True
 
