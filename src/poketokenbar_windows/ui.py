@@ -106,6 +106,7 @@ from .floating_pet import (
     PET_BIAS_LEFT,
     PET_BIAS_RIGHT,
     normalize_pet_bias,
+    PET_PARTY_DEFAULT,
     PET_PARTY_KEY,
     PET_SIZE_KEY,
     PET_SNAP_KEY,
@@ -118,6 +119,15 @@ from .floating_pet import (
 # decided on, so it gets room - roughly the size of a party card's portrait
 # rather than the thumbnail it used to be.
 TRADE_SPRITE_BOX = 112
+
+# Standalone portraits, all trimmed - nothing sits beside them for the sprite's
+# own padding to align against, so the padding is just wasted space.
+#
+# The evolution line lives ONLY in the Pokedex (MainWindow.show_evolution_line).
+# The Party tab and Oak's Ranch each show the single Pokemon that is there.
+RANCH_SPRITE = 112
+PARTY_MAIN_SPRITE = 104
+PARTY_BENCH_SPRITE = 72
 from .limits import apply_reset_anchor, fetch_all_limits
 from .models import ProviderLimits, UsageSnapshot
 from .notifications import (
@@ -1159,7 +1169,7 @@ class MainWindow(QMainWindow):
         )
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(heading)
-        main_sprite = self._party_sprite(main, 84)
+        main_sprite = self._party_sprite(main, PARTY_MAIN_SPRITE)
         main_layout.addWidget(main_sprite)
         main_caption = self._party_caption(main, "Egg - no main Pokemon yet")
         caption_font = main_caption.font()
@@ -1179,7 +1189,9 @@ class MainWindow(QMainWindow):
         )
         main_star_row.addStretch(1)
         main_layout.addLayout(main_star_row)
-        main_card.setMaximumHeight(190)
+        # 190 clipped the enlarged portrait; this leaves room for it without
+        # letting the main card dominate the tab.
+        main_card.setMaximumHeight(230)
         # Span all three columns so the main lines up flush with the bench rack
         # instead of stopping two-thirds across.
         self.party_grid.addWidget(main_card, 0, 0, 1, 3)
@@ -1191,7 +1203,7 @@ class MainWindow(QMainWindow):
             card.setObjectName("Card")
             card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             card_layout = QVBoxLayout(card)
-            card_layout.addWidget(self._party_sprite(member, 56))
+            card_layout.addWidget(self._party_sprite(member, PARTY_BENCH_SPRITE))
             card_layout.addWidget(self._party_caption(member, "Empty slot"))
             if member is not None:
                 bench_index = catch_index_for(self.state, member)
@@ -1260,7 +1272,9 @@ class MainWindow(QMainWindow):
             label.setPixmap(_pokeball_pixmap(size))
             return label
         path = self.api.sprite_path(member.current_id, shiny=member.is_shiny, animated=False)
-        pix = _sprite_pixmap(path, size)
+        # Trimmed: a standalone portrait with nothing beside it, so the sprite's
+        # own padding is only wasted space.
+        pix = _sprite_pixmap(path, size, trim=True)
         label.setPixmap(pix if not pix.isNull() else _pokeball_pixmap(size))
         return label
 
@@ -2075,7 +2089,10 @@ class MainWindow(QMainWindow):
             "Off shows only your main Pokemon; on lines the bench up beside it."
         )
         self.pet_party_check.setChecked(
-            settings_bool(self.settings.value(PET_PARTY_KEY, True), True)
+            settings_bool(
+                self.settings.value(PET_PARTY_KEY, PET_PARTY_DEFAULT),
+                PET_PARTY_DEFAULT,
+            )
         )
         self.pet_party_check.toggled.connect(self.pet_party_changed.emit)
         self.pet_party_check.setStyleSheet("border: none;")
@@ -3208,55 +3225,21 @@ class MainWindow(QMainWindow):
         summary.setStyleSheet("color: palette(text);")
         layout.addWidget(summary)
 
-        line = QHBoxLayout()
-        line.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        for index, species_id in enumerate(path_ids):
-            if index:
-                arrow = QLabel("→")
-                arrow.setStyleSheet(
-            "color: {c}; font-size: 16px;".replace("{c}", palette(self._theme_name())["text_muted"])
+        # Just the Pokemon that is actually resting here. The Ranch is storage,
+        # not a reference - the evolution line belongs in the Pokedex, where
+        # clicking a species opens its whole line with silhouettes for the
+        # forms you have not collected.
+        portrait = QLabel()
+        portrait.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        portrait.setFixedHeight(RANCH_SPRITE + 8)
+        portrait.setStyleSheet("border: none;")
+        pix = _sprite_pixmap(
+            self.api.sprite_path(display_id, shiny=catch.is_shiny, animated=False),
+            RANCH_SPRITE,
+            trim=True,
         )
-                line.addWidget(arrow)
-            have = index <= owned_index
-            current_stage = index == owned_index
-            stage = QWidget()
-            stage_layout = QVBoxLayout(stage)
-            stage_layout.setContentsMargins(0, 0, 0, 0)
-            stage_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            sprite = QLabel()
-            sprite.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            sprite.setFixedSize(72, 72)
-            path = self.api.sprite_path(species_id, shiny=catch.is_shiny, animated=False) if have else self.api.sprite_path(species_id, animated=False)
-            pix = _sprite_pixmap(path, 64)
-            if pix.isNull():
-                pix = _pokeball_pixmap(64)
-            if not have:
-                pix = _muted_pixmap(pix)
-            sprite.setPixmap(pix)
-            if current_stage:
-                sprite.setObjectName("CardActive")
-            elif not have:
-                sprite.setObjectName("CardRaised")
-            if have:
-                stage_name = QLabel(self.api.localized_name(species_id, self.state.language))
-                status = QLabel("You have this" if current_stage else "Previous form")
-                status.setStyleSheet(
-                    f"color: {palette(self._theme_name())['success']};" if current_stage
-                    else f"color: {palette(self._theme_name())['text_muted']};"
-                )
-            else:
-                stage_name = QLabel("???")
-                status = QLabel("Not owned")
-                status.setObjectName("Muted")
-                stage_name.setObjectName("Muted")
-            stage_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            stage_layout.addWidget(sprite)
-            stage_layout.addWidget(stage_name)
-            stage_layout.addWidget(status)
-            line.addWidget(stage)
-        line.addStretch(1)
-        layout.addLayout(line)
+        portrait.setPixmap(pix if not pix.isNull() else _pokeball_pixmap(RANCH_SPRITE))
+        layout.addWidget(portrait)
 
         meta = QLabel(
             f"#{display_id:03d} · {catch.rarity.title()} · {catch.nature} · {catch.caught_at[:10]}"

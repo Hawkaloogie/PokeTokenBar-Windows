@@ -48,6 +48,10 @@ PET_X_KEY = "floating_pet/position_x"
 PET_Y_KEY = "floating_pet/position_y"
 PET_SNAP_KEY = "floating_pet/snap_taskbar"
 PET_PARTY_KEY = "floating_pet/show_party"
+# Off by default: the desktop pet is the MAIN Pokemon, and six sprites strung
+# across the taskbar is a lot to opt someone into without asking. Turning the
+# whole party on is a deliberate choice in Settings > Desktop pet.
+PET_PARTY_DEFAULT = False
 PET_BIAS_KEY = "floating_pet/bias"
 # Which screen edge the companion is meant to live against. On the right the
 # whole row extends leftwards so the main still hugs the edge; the level stays
@@ -369,11 +373,8 @@ class FloatingPetWindow(QWidget):
         if lead and self.level_text:
             font = self._level_font()
             self.level_label.setFont(font)
+            self.level_label.setStyleSheet(self._level_style())
             self.level_label.setText(self.level_display_text())
-            alpha = int(255 * LEVEL_OPACITY)
-            self.level_label.setStyleSheet(
-                f"background: transparent; color: rgba(233, 236, 241, {alpha});"
-            )
             text_height = QFontMetrics(font).height()
             gap = max(2, round(self.pet_size * LEVEL_GAP_SCALE))
             # Bottom-aligned with the sprite's feet.
@@ -605,11 +606,38 @@ class FloatingPetWindow(QWidget):
         top = (self.sprite_area() - pixmap.height()) // 2
         return max(1, min(self.sprite_area(), top + bounds.bottom() + 1))
 
+    def _level_point_size(self) -> int:
+        return max(6, round(self.pet_size * LEVEL_FONT_SCALE))
+
     def _level_font(self) -> QFont:
+        """The font the level is MEASURED with.
+
+        Must stay in step with the size written into the label's own style
+        sheet - see _level_style. A Qt style sheet's font-size beats
+        QWidget.setFont(), so measuring one font while Qt paints another is
+        what clipped the 'L' off "Lv.": the label was sized from an 8pt font
+        and painted at the app-wide 13px.
+        """
         font = QFont(self.level_label.font())
-        font.setPointSize(max(6, round(self.pet_size * LEVEL_FONT_SCALE)))
+        font.setPointSize(self._level_point_size())
         font.setBold(True)
         return font
+
+    def _level_style(self) -> str:
+        """The label's own style sheet, carrying the size explicitly.
+
+        The app-wide rule is `QWidget { font-size: 13px; }`, which outranks
+        setFont() on this label. Restating the size here is what makes the
+        painted text match _level_font, and therefore match the width the
+        layout reserved for it.
+        """
+        alpha = int(255 * LEVEL_OPACITY)
+        return (
+            "background: transparent; "
+            f"color: rgba(233, 236, 241, {alpha}); "
+            f"font-size: {self._level_point_size()}pt; "
+            "font-weight: bold;"
+        )
 
     def level_display_text(self) -> str:
         """The level as shown, in the widest form that still fits beside the pet.
@@ -628,13 +656,25 @@ class FloatingPetWindow(QWidget):
         return digits or self.level_text
 
     def level_width(self) -> int:
-        """Horizontal room the level needs beside the sprite, 0 when hidden."""
+        """Horizontal room the level needs beside the sprite, 0 when hidden.
+
+        Measured against the INK as well as the advance. The label is right
+        aligned, so anything that spills past the width it was given clips off
+        the LEFT - which shows up as a half-drawn 'L'. A glyph can extend past
+        its advance width (a negative left bearing does exactly that), so the
+        wider of the two wins, plus a pixel of slack for rounding.
+        """
         text = self.level_display_text()
         if not text:
             return 0
         metrics = QFontMetrics(self._level_font())
+        ink = metrics.boundingRect(text)
+        needed = max(
+            metrics.horizontalAdvance(text),
+            ink.width() + max(0, -ink.left()),
+        )
         gap = max(2, round(self.pet_size * LEVEL_GAP_SCALE))
-        return metrics.horizontalAdvance(text) + gap
+        return needed + 1 + gap
 
     def set_bias(self, bias: str) -> None:
         """Which edge the main hugs; the bench extends away from that edge."""
@@ -973,7 +1013,9 @@ class FloatingPetController(QObject):
         self.show_limit = settings_bool(settings.value("tray_show_limit", True), True)
         self.size = normalize_pet_size(settings.value(PET_SIZE_KEY, PET_DEFAULT_SIZE))
         self.snap_enabled = settings_bool(settings.value(PET_SNAP_KEY, False), False)
-        self.party_visible = settings_bool(settings.value(PET_PARTY_KEY, True), True)
+        self.party_visible = settings_bool(
+            settings.value(PET_PARTY_KEY, PET_PARTY_DEFAULT), PET_PARTY_DEFAULT
+        )
         self.bias = normalize_pet_bias(settings.value(PET_BIAS_KEY, PET_BIAS_LEFT))
         self._last_bench_paths: list[Path | None] = []
         self.result: Any | None = None
