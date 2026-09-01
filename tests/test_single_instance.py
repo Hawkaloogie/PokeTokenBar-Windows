@@ -45,7 +45,7 @@ class SingleInstanceClaimTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.app = _app()
-        os.environ["PTB_STATE_DIR"] = r"D:	est-isolated-instance"
+        os.environ["PTB_STATE_DIR"] = r"D:\test-isolated-instance"
         self.key = _single_instance_key()
         QLocalServer.removeServer(self.key)
         self.servers: list[QLocalServer] = []

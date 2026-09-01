@@ -14,7 +14,7 @@ REM  and mangles non-ASCII characters into parse errors.
 REM ---------------------------------------------------------------------
 
 setlocal
-set "APPDIR=D:\dev\PokeTokenBar-Windows"
+set "APPDIR=%~dp0.."
 set "PYW=%APPDIR%\.venv\Scripts\pythonw.exe"
 
 if not exist "%PYW%" (
@@ -43,7 +43,7 @@ start "" "%PYW%" -m poketokenbar_windows
 powershell -NoProfile -Command "Start-Sleep -Seconds 3"
 
 powershell -NoProfile -Command ^
-  "$p = @(Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | Where-Object { $_.CommandLine -like '*poketokenbar_windows*' }); if ($p.Count -gt 0) { Write-Host ''; Write-Host 'PokeTokenBar is running. Look for it in the system tray.' -ForegroundColor Green } else { Write-Host ''; Write-Host 'PokeTokenBar did NOT start. Run this to see the error:' -ForegroundColor Red; Write-Host '  D:\dev\PokeTokenBar-Windows\.venv\Scripts\python.exe -m poketokenbar_windows' }"
+  "$p = @(Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | Where-Object { $_.CommandLine -like '*poketokenbar_windows*' }); if ($p.Count -gt 0) { Write-Host ''; Write-Host 'PokeTokenBar is running. Look for it in the system tray.' -ForegroundColor Green } else { Write-Host ''; Write-Host 'PokeTokenBar did NOT start. Run this to see the error:' -ForegroundColor Red; Write-Host '  %APPDIR%\.venv\Scripts\python.exe -m poketokenbar_windows' }"
 
 echo.
 REM `timeout` needs a real console and hangs when output is redirected,

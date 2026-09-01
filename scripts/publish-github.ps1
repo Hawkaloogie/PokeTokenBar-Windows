@@ -1,8 +1,45 @@
+param(
+    [string]$owner = "",
+    [string]$repo = "",
+    [string]$visibility = ""
+)
+
 $ErrorActionPreference = "Stop"
 
-$owner = if ($env:GITHUB_OWNER) { $env:GITHUB_OWNER } else { "pnmartinez" }
-$repo = if ($env:GITHUB_REPO) { $env:GITHUB_REPO } else { "PokeTokenBar-Windows" }
-$visibility = if ($env:GITHUB_VISIBILITY) { $env:GITHUB_VISIBILITY } else { "public" }
+# Determine owner: param > env > derived from gh api user
+if (-not $owner) {
+    if ($env:GITHUB_OWNER) {
+        $owner = $env:GITHUB_OWNER
+    } else {
+        try {
+            $owner = & gh api user --jq '.login' 2>$null
+            if (-not $owner) {
+                throw "GitHub API returned empty login"
+            }
+        } catch {
+            Write-Error "Failed to determine GitHub owner: $_`nSet GITHUB_OWNER env var or pass -owner parameter."
+            exit 1
+        }
+    }
+}
+
+# Determine repo
+if (-not $repo) {
+    if ($env:GITHUB_REPO) {
+        $repo = $env:GITHUB_REPO
+    } else {
+        $repo = "PokeTokenBar-Windows"
+    }
+}
+
+# Determine visibility
+if (-not $visibility) {
+    if ($env:GITHUB_VISIBILITY) {
+        $visibility = $env:GITHUB_VISIBILITY
+    } else {
+        $visibility = "public"
+    }
+}
 $full = "$owner/$repo"
 
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
