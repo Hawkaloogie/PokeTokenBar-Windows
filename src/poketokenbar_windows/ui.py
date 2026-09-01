@@ -1366,6 +1366,8 @@ class MainWindow(QMainWindow):
         self.pace_combo.setToolTip(
             "Scales every cost together - hatching, growth and the shop."
         )
+        self._committed_pace = normalize_pace(self.state.pace)
+        self._select_pace(self._committed_pace)
         self.pace_combo.currentIndexChanged.connect(
             lambda _index: self.pace_changed.emit(self.pace_combo.currentData())
         )
@@ -1724,19 +1726,39 @@ class MainWindow(QMainWindow):
         self._render_collection()
         self._render_party()
 
-    def _sync_pace_combo(self) -> None:
+    def _select_pace(self, pace: str) -> None:
         combo = getattr(self, "pace_combo", None)
         if combo is None:
             return
-        target = normalize_pace(self.state.pace)
-        if combo.currentData() == target:
+        if combo.currentData() != pace:
+            for index in range(combo.count()):
+                if combo.itemData(index) == pace:
+                    combo.blockSignals(True)
+                    combo.setCurrentIndex(index)
+                    combo.blockSignals(False)
+                    break
+
+    def _sync_pace_combo(self) -> None:
+        """Move the picker to the saved pace and remember it as committed."""
+        if getattr(self, "pace_combo", None) is None:
             return
-        for index in range(combo.count()):
-            if combo.itemData(index) == target:
-                combo.blockSignals(True)
-                combo.setCurrentIndex(index)
-                combo.blockSignals(False)
-                return
+        target = normalize_pace(self.state.pace)
+        self._committed_pace = target
+        self._select_pace(target)
+
+    def revert_pace_combo(self) -> None:
+        """Put the picker back after a rejected change.
+
+        Deliberately restores the last COMMITTED pace rather than reading
+        self.state: a background refresh can swap self.state for a fresh
+        snapshot while the confirmation dialog is open, which used to make the
+        picker snap to whatever that snapshot carried instead of the real pace.
+        """
+        committed = getattr(self, "_committed_pace", None)
+        if committed is None:
+            self._sync_pace_combo()
+            return
+        self._select_pace(committed)
 
     def _sync_generation_combo(self) -> None:
         combo = getattr(self, "generation_combo", None)
@@ -2600,7 +2622,7 @@ class TrayController(QObject):
                 QMessageBox.StandardButton.Cancel,
             )
             if confirm != QMessageBox.StandardButton.Yes:
-                self.window._sync_pace_combo()  # put the picker back
+                self.window.revert_pace_combo()  # put the picker back
                 return
             try:
                 with self.state_lock:
@@ -2612,7 +2634,7 @@ class TrayController(QObject):
                 QMessageBox.warning(
                     self.window, "PokeTokenBar", "The pace could not be changed."
                 )
-                self.window._sync_pace_combo()
+                self.window.revert_pace_combo()
                 return
             self.window.set_state(self.state)
             self._run_setup()
@@ -2628,7 +2650,7 @@ class TrayController(QObject):
             QMessageBox.warning(
                 self.window, "PokeTokenBar", "The pace could not be changed."
             )
-            self.window._sync_pace_combo()
+            self.window.revert_pace_combo()
             return
         self.window.set_state(self.state)
         self.refresh()
