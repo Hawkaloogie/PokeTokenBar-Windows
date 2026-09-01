@@ -193,6 +193,15 @@ def build_stylesheet(mode: str) -> str:
 
         QCheckBox {{ spacing: {SPACE_SM}px; padding: {SPACE_XS}px 0; }}
 
+        /* Muted text is a ROLE, not palette(mid) - that is a border colour and
+           renders near-invisible on a dark background. */
+        QLabel#Muted {{
+            color: {c['text_muted']};
+            background: transparent;
+            border: none;
+        }}
+        QLabel#Faint {{ color: {c['text_faint']}; background: transparent; border: none; }}
+
         QListWidget {{
             background: transparent;
             border: 1px solid {c['border']};

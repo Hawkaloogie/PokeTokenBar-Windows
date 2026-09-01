@@ -753,7 +753,7 @@ class SetupDialog(QDialog):
             "This is a cap - everything below it stays in the pool too."
         )
         cap_note.setWordWrap(True)
-        cap_note.setStyleSheet("color: palette(mid);")
+        cap_note.setObjectName("Muted")
         layout.addWidget(cap_note)
 
         start_label = QLabel("How do you want to start?")
@@ -785,7 +785,7 @@ class SetupDialog(QDialog):
             "uses do not cover later generations."
         )
         note.setWordWrap(True)
-        note.setStyleSheet("color: palette(mid);")
+        note.setObjectName("Muted")
         layout.addWidget(note)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
@@ -944,7 +944,7 @@ class MainWindow(QMainWindow):
         self.detail_label.setWordWrap(True)
         self.evolution_label = QLabel("Hatch the egg to discover its evolution line")
         self.evolution_label.setWordWrap(True)
-        self.evolution_label.setStyleSheet("color: palette(mid);")
+        self.evolution_label.setObjectName("Muted")
         self.progress_label = QLabel("")
         self.progress_percent_label = QLabel("Lv. 0")
         percent_font = self.progress_percent_label.font()
@@ -992,7 +992,7 @@ class MainWindow(QMainWindow):
         heading.addWidget(label)
         heading.addStretch(1)
         self.refresh_status = QLabel("Ready")
-        self.refresh_status.setStyleSheet("color: palette(mid);")
+        self.refresh_status.setObjectName("Muted")
         heading.addWidget(self.refresh_status)
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.setToolTip("Scan local usage and official limits now")
@@ -1039,6 +1039,9 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # Content must fit the width and scroll only vertically; a sideways
+        # scrollbar means something is already cut off.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(widget)
         return scroll
 
@@ -1051,7 +1054,7 @@ class MainWindow(QMainWindow):
             "and they appear smaller beside the main on the desktop."
         )
         blurb.setWordWrap(True)
-        blurb.setStyleSheet("color: palette(mid);")
+        blurb.setObjectName("Muted")
         layout.addWidget(blurb)
         self.party_grid = QGridLayout()
         self.party_grid.setSpacing(10)
@@ -1215,7 +1218,7 @@ class MainWindow(QMainWindow):
         label.setStyleSheet("border: none;")
         if member is None:
             label.setText(empty_text)
-            label.setStyleSheet("color: palette(mid); border: none;")
+            label.setObjectName("Muted")
             return label
         name = self.api.localized_name(member.current_id, self.state.language)
         shiny = "✨ " if member.is_shiny else ""
@@ -1261,14 +1264,14 @@ class MainWindow(QMainWindow):
             "This Pokemon does not evolve."
         )
         caption.setWordWrap(True)
-        caption.setStyleSheet("color: palette(mid);")
+        caption.setObjectName("Muted")
         layout.addWidget(caption)
 
         row = QHBoxLayout()
         for position, stage_id in enumerate(path):
             if position:
                 arrow = QLabel("→")
-                arrow.setStyleSheet("color: palette(mid); font-size: 20px;")
+                arrow.setStyleSheet("color: #9aa4b4; font-size: 20px;")
                 row.addWidget(arrow)
             have = stage_id in owned
             cell = QVBoxLayout()
@@ -1293,7 +1296,7 @@ class MainWindow(QMainWindow):
             status = QLabel("Collected" if have else "Not yet")
             status.setAlignment(Qt.AlignmentFlag.AlignCenter)
             status.setStyleSheet(
-                "color: #16a34a;" if have else "color: palette(mid);"
+                "color: #34d399;" if have else "color: #9aa4b4;"
             )
             cell.addWidget(status)
             row.addLayout(cell)
@@ -1324,13 +1327,13 @@ class MainWindow(QMainWindow):
             if favourite else
             "Favourite this Pokemon so it can never be traded away"
         )
-        colour = "#f59e0b" if favourite else "palette(mid)"
+        colour = "#f59e0b" if favourite else "#9aa4b4"
         star.setStyleSheet(
             "QPushButton { background: transparent; border: none; padding: 0; "
             f"font-size: 19px; color: {colour}; " + "}"
             "QPushButton:hover { color: #f59e0b; }"
             "QPushButton:pressed { background: transparent; }"
-            "QPushButton:disabled { color: palette(mid); }"
+            "QPushButton:disabled { color: #6c7688; }"
         )
         if catch_index >= 0:
             star.clicked.connect(
@@ -1352,12 +1355,12 @@ class MainWindow(QMainWindow):
             "than a freshly hatched one. Favourites are never accepted."
         )
         blurb.setWordWrap(True)
-        blurb.setStyleSheet("color: palette(mid);")
+        blurb.setObjectName("Muted")
         layout.addWidget(blurb)
 
         header = QHBoxLayout()
         self.trades_status = QLabel("")
-        self.trades_status.setStyleSheet("color: palette(mid);")
+        self.trades_status.setObjectName("Muted")
         header.addWidget(self.trades_status)
         header.addStretch(1)
         self.trade_reroll_button = QPushButton("Reroll offers")
@@ -1416,7 +1419,7 @@ class MainWindow(QMainWindow):
             detail = QLabel(
                 f"{offer.gives_rarity.title()} - {generation_label(offer.gives_id)}"
             )
-            detail.setStyleSheet("color: palette(mid); border: none;")
+            detail.setObjectName("Muted")
             text.addWidget(detail)
             wants = QLabel(f"Wants: {offer.describe_wanted()}")
             wants.setStyleSheet("border: none;")
@@ -1465,6 +1468,7 @@ class MainWindow(QMainWindow):
         self.dex_page = 0
         dex_header = QHBoxLayout()
         self.dex_counts = QLabel("0 species")
+        self.dex_counts.setWordWrap(True)
         dex_header.addWidget(self.dex_counts)
         dex_header.addStretch(1)
         self.dex_prev = QPushButton("←")
@@ -1519,7 +1523,7 @@ class MainWindow(QMainWindow):
         self.bag_empty = QLabel("Your bag is empty. Earn tokens, then visit the Shop.")
         self.bag_empty.setWordWrap(True)
         self.bag_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.bag_empty.setStyleSheet("color: palette(mid); padding: 18px;")
+        self.bag_empty.setStyleSheet("color: #9aa4b4; padding: 18px;")
         layout.addWidget(self.bag_empty)
         actions = QGridLayout()
         self.use_candy_btn = QPushButton("Use Rare Candy")
@@ -1573,7 +1577,7 @@ class MainWindow(QMainWindow):
         heading.addWidget(self.wallet_shop_label)
         layout.addLayout(heading)
         hint = QLabel("Spend only tokens observed since PokeTokenBar was installed.")
-        hint.setStyleSheet("color: palette(mid);")
+        hint.setObjectName("Muted")
         layout.addWidget(hint)
         actions = QGridLayout()
         self.buy_candy_btn = QPushButton("🍬 Rare Candy\nProgress boost · 500M")
@@ -1601,40 +1605,30 @@ class MainWindow(QMainWindow):
     # how they read has changed.
     # ------------------------------------------------------------------
 
-    SETTINGS_STYLE = """
-        QListWidget#SettingsNav {
-            background: transparent;
-            border: none;
-            outline: 0;
-            padding: 6px 0;
-        }
-        QListWidget#SettingsNav::item {
+    def _settings_style(self) -> str:
+        """Settings chrome, built from the tokens so dark mode stays legible."""
+        c = palette(str(self.settings.value("theme", "system")))
+        return f"""
+        QListWidget#SettingsNav {{
+            background: transparent; border: none; outline: 0; padding: 6px 0;
+        }}
+        QListWidget#SettingsNav::item {{
+            color: {c['text_muted']};
             padding: 9px 12px;
             margin: 2px 6px;
-            border-radius: 8px;
-            color: palette(text);
-        }
-        QListWidget#SettingsNav::item:selected {
-            background: #2563eb;
-            color: white;
+            border-radius: {RADIUS_CONTROL}px;
+        }}
+        QListWidget#SettingsNav::item:selected {{
+            background: {c['accent']};
+            color: {c['accent_text']};
             font-weight: 600;
-        }
-        QListWidget#SettingsNav::item:hover:!selected {
-            background: rgba(127, 140, 160, 0.18);
-        }
-        QFrame#SettingsCard {
-            border: 1px solid palette(mid);
-            border-radius: 8px;
-        }
-        QFrame#SettingsDivider {
-            background: palette(mid);
-            max-height: 1px;
-            border: none;
-        }
-        QFrame#SettingsFooter {
-            border-top: 1px solid palette(mid);
-        }
-    """
+        }}
+        QListWidget#SettingsNav::item:hover:!selected {{
+            background: {c['surface_alt']};
+            color: {c['text']};
+        }}
+        QFrame#SettingsFooter {{ border-top: 1px solid {c['border']}; }}
+        """
 
     def _settings_title(self, text: str, *, size_delta: int = 4) -> QLabel:
         label = QLabel(text)
@@ -1647,7 +1641,7 @@ class MainWindow(QMainWindow):
     def _settings_caption(self, text: str) -> QLabel:
         label = QLabel(text)
         label.setWordWrap(True)
-        label.setStyleSheet("color: palette(mid);")
+        label.setObjectName("Muted")
         return label
 
     def _settings_page(self, title: str, subtitle: str):
@@ -1664,6 +1658,7 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         holder = QWidget()
         content = QVBoxLayout(holder)
         content.setContentsMargins(0, 0, 6, 0)
@@ -1685,29 +1680,35 @@ class MainWindow(QMainWindow):
             inner.addWidget(heading)
         if description:
             note = self._settings_caption(description)
-            note.setStyleSheet("color: palette(mid); border: none;")
+            note.setObjectName("Muted")
             inner.addWidget(note)
         layout.addWidget(card)
         return inner
 
     def _settings_row(self, layout, label: str, control, description: str = "") -> None:
-        """A labelled control with the explanation directly under it."""
-        row = QHBoxLayout()
-        row.setSpacing(12)
+        """Label above, control below, explanation under that.
+
+        Side-by-side rows made the label and the control fight for one line, so
+        a long dropdown pushed the card wider than the pane and the text was cut
+        off. Stacking removes the competition entirely and fits any width.
+        """
         caption = QLabel(label)
         caption.setStyleSheet("border: none;")
-        row.addWidget(caption)
-        row.addStretch(1)
-        row.addWidget(control)
-        layout.addLayout(row)
+        caption_font = caption.font()
+        caption_font.setBold(True)
+        caption.setFont(caption_font)
+        layout.addWidget(caption)
+        control.setSizePolicy(QSizePolicy.Policy.Ignored, control.sizePolicy().verticalPolicy())
+        layout.addWidget(control)
         if description:
             note = self._settings_caption(description)
-            note.setStyleSheet("color: palette(mid); border: none;")
+            note.setObjectName("Muted")
             layout.addWidget(note)
+        layout.addSpacing(SPACE_SM)
 
     def _build_settings(self) -> QWidget:
         root = QWidget()
-        root.setStyleSheet(self.SETTINGS_STYLE)
+        root.setStyleSheet(self._settings_style())
         outer = QVBoxLayout(root)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -1718,13 +1719,13 @@ class MainWindow(QMainWindow):
 
         self.settings_nav = QListWidget()
         self.settings_nav.setObjectName("SettingsNav")
-        self.settings_nav.setFixedWidth(178)
+        self.settings_nav.setFixedWidth(146)
         self.settings_nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body.addWidget(self.settings_nav)
 
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.VLine)
-        divider.setStyleSheet("color: palette(mid);")
+        divider.setObjectName("Muted")
         body.addWidget(divider)
 
         self.settings_stack = QStackedWidget()
@@ -1792,9 +1793,7 @@ class MainWindow(QMainWindow):
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
         self.generation_combo.setMinimumContentsLength(16)
-        self.generation_combo.setMinimumWidth(
-            max(240, self.generation_combo.minimumSizeHint().width())
-        )
+        self.generation_combo.setMinimumWidth(0)
         self._settings_row(
             hatch, "Highest generation", self.generation_combo,
             "A cap, not a filter: picking Gen 3 keeps Kanto and Johto in the pool "
@@ -1820,9 +1819,7 @@ class MainWindow(QMainWindow):
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
         self.pace_combo.setMinimumContentsLength(16)
-        self.pace_combo.setMinimumWidth(
-            max(240, self.pace_combo.minimumSizeHint().width())
-        )
+        self.pace_combo.setMinimumWidth(0)
         self._settings_row(
             pace, "Token pace", self.pace_combo,
             "At the standard pace a casual Claude user waits months for one hatch. "
@@ -2643,7 +2640,7 @@ class MainWindow(QMainWindow):
         title.setWordWrap(True)
         reset_line = QLabel(detail)
         reset_line.setWordWrap(True)
-        reset_line.setStyleSheet("color: palette(mid); font-size: 11px;")
+        reset_line.setStyleSheet("color: #9aa4b4; font-size: 11px;")
         bar = QProgressBar()
         bar.setRange(0, 100)
         displayed = window.remaining_percent if display_mode == "remaining" else used
@@ -2937,7 +2934,7 @@ class MainWindow(QMainWindow):
         name.setFont(font)
         number = QLabel(f"{'✨ ' if shiny else ''}#{species_id:03d}")
         number.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        number.setStyleSheet("color: palette(mid);")
+        number.setObjectName("Muted")
         favourite_index = next(
             (i for i, c in enumerate(self.state.catches or [])
              if c.species_id == species_id and c.is_favourite),
@@ -2950,7 +2947,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(starred)
         generation = QLabel(generation_label(species_id))
         generation.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        generation.setStyleSheet("color: palette(mid);")
+        generation.setObjectName("Muted")
         layout.addWidget(sprite)
         layout.addWidget(number)
         layout.addWidget(name)
@@ -3025,7 +3022,7 @@ class MainWindow(QMainWindow):
         for index, species_id in enumerate(path_ids):
             if index:
                 arrow = QLabel("→")
-                arrow.setStyleSheet("color: palette(mid); font-size: 16px;")
+                arrow.setStyleSheet("color: #9aa4b4; font-size: 16px;")
                 line.addWidget(arrow)
             have = index <= owned_index
             current_stage = index == owned_index
@@ -3050,12 +3047,12 @@ class MainWindow(QMainWindow):
             if have:
                 stage_name = QLabel(self.api.localized_name(species_id, self.state.language))
                 status = QLabel("You have this" if current_stage else "Previous form")
-                status.setStyleSheet("color: #166534;" if current_stage else "color: palette(mid);")
+                status.setStyleSheet("color: #34d399;" if current_stage else "color: #9aa4b4;")
             else:
                 stage_name = QLabel("???")
                 status = QLabel("Not owned")
-                status.setStyleSheet("color: palette(mid);")
-                stage_name.setStyleSheet("color: palette(mid);")
+                status.setObjectName("Muted")
+                stage_name.setObjectName("Muted")
             stage_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
             status.setAlignment(Qt.AlignmentFlag.AlignCenter)
             stage_layout.addWidget(sprite)
@@ -3068,7 +3065,7 @@ class MainWindow(QMainWindow):
         meta = QLabel(
             f"#{display_id:03d} · {catch.rarity.title()} · {catch.nature} · {catch.caught_at[:10]}"
         )
-        meta.setStyleSheet("color: palette(mid);")
+        meta.setObjectName("Muted")
         layout.addWidget(meta)
         return card
 
