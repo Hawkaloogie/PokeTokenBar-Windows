@@ -111,7 +111,13 @@ from .floating_pet import (
     PET_SNAP_KEY,
     AnimatedSpriteFrameStabilizer,
     FloatingPetController,
+    _trim_transparent,
 )
+
+# The trade board shows one Pokemon per offer and it is the thing being
+# decided on, so it gets room - roughly the size of a party card's portrait
+# rather than the thumbnail it used to be.
+TRADE_SPRITE_BOX = 112
 from .limits import apply_reset_anchor, fetch_all_limits
 from .models import ProviderLimits, UsageSnapshot
 from .notifications import (
@@ -471,7 +477,19 @@ def _silhouette(pixmap: QPixmap) -> QPixmap:
     return canvas
 
 
-def _sprite_pixmap(path: Path | None, box: int = 96) -> QPixmap:
+def _sprite_pixmap(path: Path | None, box: int = 96, *, trim: bool = False) -> QPixmap:
+    """Load a sprite scaled into a `box` x `box` square.
+
+    `trim` crops the transparent padding first, so the artwork fills the box
+    instead of the image's own margins. PokeAPI's static sprites pad heavily -
+    a Pokemon typically covers a bit over half its canvas - so an untrimmed
+    sprite renders far smaller than its box suggests. Off by default because
+    the padding is what keeps a row of sprites optically aligned; switch it on
+    where one sprite stands alone and wants to be seen.
+
+    Nearest-neighbour scaling is deliberate: these are pixel art, and smooth
+    interpolation turns them to mush when scaled up.
+    """
     pix = QPixmap()
     if path is not None and path.exists():
         if path.suffix.lower() == ".gif":
@@ -483,6 +501,8 @@ def _sprite_pixmap(path: Path | None, box: int = 96) -> QPixmap:
             pix = QPixmap(str(path))
     if pix.isNull():
         return QPixmap()
+    if trim:
+        pix = _trim_transparent(pix)
     return pix.scaled(box, box, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
 
 
@@ -1469,13 +1489,19 @@ class MainWindow(QMainWindow):
             card.setObjectName("Card")
             row = QHBoxLayout(card)
 
+            # The offered Pokemon is the thing being decided on, so it gets
+            # room. Trimmed as well as enlarged: a static PokeAPI sprite only
+            # covers about half its canvas, so a bigger box alone would have
+            # bought mostly empty space.
             sprite = QLabel()
             sprite.setStyleSheet("border: none;")
-            sprite.setFixedSize(64, 64)
+            sprite.setFixedSize(TRADE_SPRITE_BOX, TRADE_SPRITE_BOX)
             sprite.setAlignment(Qt.AlignmentFlag.AlignCenter)
             path = self.api.sprite_path(offer.gives_id, animated=False)
-            pix = _sprite_pixmap(path, 60)
-            sprite.setPixmap(pix if not pix.isNull() else _pokeball_pixmap(60))
+            pix = _sprite_pixmap(path, TRADE_SPRITE_BOX, trim=True)
+            sprite.setPixmap(
+                pix if not pix.isNull() else _pokeball_pixmap(TRADE_SPRITE_BOX)
+            )
             row.addWidget(sprite)
 
             text = QVBoxLayout()

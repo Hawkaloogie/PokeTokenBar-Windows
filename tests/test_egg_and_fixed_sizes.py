@@ -258,3 +258,47 @@ class CalloutAnchorTests(unittest.TestCase):
         anchor = pet.main_slot_rect()
         self.assertGreaterEqual(anchor.x(), pet.x())
         self.assertLessEqual(anchor.right(), pet.x() + pet.width())
+
+
+class TradeSpritePresentationTests(unittest.TestCase):
+    """Trade offers show one Pokemon each and it should be readable.
+
+    Reported as: "for the trading store, can we make the pokemon larger to be
+    more viewable". Enlarging the box alone would not have done it - a static
+    PokeAPI sprite covers roughly half its canvas, so most of a bigger box
+    would have been transparent padding.
+    """
+
+    def setUp(self) -> None:
+        self.app = _app()
+
+    def test_trimming_is_off_by_default(self) -> None:
+        """Other surfaces rely on the padding to stay optically aligned."""
+        from poketokenbar_windows.ui import _sprite_pixmap
+        import inspect
+
+        signature = inspect.signature(_sprite_pixmap)
+        self.assertIs(signature.parameters["trim"].default, False)
+
+    def test_the_trade_box_is_bigger_than_the_old_thumbnail(self) -> None:
+        from poketokenbar_windows.ui import TRADE_SPRITE_BOX
+
+        self.assertGreater(TRADE_SPRITE_BOX, 64)
+
+    def test_a_trimmed_sprite_fills_far_more_of_its_box(self) -> None:
+        from poketokenbar_windows.ui import TRADE_SPRITE_BOX, _sprite_pixmap
+        import tempfile
+
+        source = _padded(96, 30)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "sprite.png"
+            source.save(str(path))
+            old = _artwork_height(_sprite_pixmap(path, 60))
+            new = _artwork_height(_sprite_pixmap(path, TRADE_SPRITE_BOX, trim=True))
+        self.assertGreaterEqual(
+            new / old, 3.0,
+            f"trade sprite only went from {old}px to {new}px",
+        )
+        self.assertEqual(
+            new, TRADE_SPRITE_BOX, "a trimmed sprite should fill its box"
+        )
