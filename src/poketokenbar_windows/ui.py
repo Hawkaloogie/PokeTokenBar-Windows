@@ -101,6 +101,10 @@ from .floating_pet import (
     MENU_REFRESH_LABEL,
     PET_ALERTS_KEY,
     PET_ENABLED_KEY,
+    PET_BIAS_KEY,
+    PET_BIAS_LEFT,
+    PET_BIAS_RIGHT,
+    normalize_pet_bias,
     PET_PARTY_KEY,
     PET_SIZE_KEY,
     PET_SNAP_KEY,
@@ -830,6 +834,7 @@ class MainWindow(QMainWindow):
     reset_requested = Signal()
     pace_changed = Signal(object)
     pet_party_changed = Signal(bool)
+    pet_bias_changed = Signal(str)
     evolve_requested = Signal()
     preferences_changed = Signal()
     representative_changed = Signal(object)
@@ -1615,6 +1620,30 @@ class MainWindow(QMainWindow):
         self.pet_snap_check.setStyleSheet("border: none;")
         card.addWidget(self.pet_snap_check)
 
+        bias = normalize_pet_bias(self.settings.value(PET_BIAS_KEY, PET_BIAS_LEFT))
+        self.pet_bias_left_button = QPushButton("Left")
+        self.pet_bias_right_button = QPushButton("Right")
+        self.pet_bias_toggle, self.pet_bias_group = self._segmented(
+            [
+                (self.pet_bias_left_button, PET_BIAS_LEFT, "PetBiasLeftSegment",
+                 "Main on the left, party extending right"),
+                (self.pet_bias_right_button, PET_BIAS_RIGHT, "PetBiasRightSegment",
+                 "Main on the right, party extending left"),
+            ],
+            "PetBias", "petBias",
+        )
+        self.pet_bias_left_button.setChecked(bias == PET_BIAS_LEFT)
+        self.pet_bias_right_button.setChecked(bias == PET_BIAS_RIGHT)
+        self.pet_bias_group.buttonClicked.connect(
+            lambda button: self.pet_bias_changed.emit(str(button.property("petBias")))
+        )
+        self._settings_row(
+            card, "Screen side", self.pet_bias_toggle,
+            "Which edge your companion lives against. The level stays beside the "
+            "main either way; the rest of the party extends away from the edge, "
+            "so nothing runs off the screen.",
+        )
+
         self.pet_party_check = QCheckBox("Show your whole party")
         self.pet_party_check.setToolTip(
             "Off shows only your main Pokemon; on lines the bench up beside it."
@@ -1972,6 +2001,8 @@ class MainWindow(QMainWindow):
         self.pet_snap_check.setEnabled(enabled)
         if hasattr(self, 'pet_party_check'):
             self.pet_party_check.setEnabled(enabled)
+        if hasattr(self, 'pet_bias_toggle'):
+            self.pet_bias_toggle.setEnabled(enabled)
         self.pet_alerts_check.setEnabled(enabled)
 
     def sync_floating_pet_settings(self, *, enabled: bool | None = None, size: int | None = None) -> None:
@@ -2818,6 +2849,7 @@ class TrayController(QObject):
         self.window.reset_requested.connect(self._reset_app)
         self.window.pace_changed.connect(self._set_pace)
         self.window.pet_party_changed.connect(self._set_party_visible)
+        self.window.pet_bias_changed.connect(self._set_pet_bias)
         self.window.preferences_changed.connect(self._preferences_changed)
         self.window.representative_changed.connect(self._set_representative)
         self.window.language_changed.connect(self._set_language)
@@ -2938,6 +2970,9 @@ class TrayController(QObject):
 
     def _set_party_visible(self, visible: bool) -> None:
         self.floating_pet.set_party_visible(bool(visible))
+
+    def _set_pet_bias(self, bias: str) -> None:
+        self.floating_pet.set_bias(bias)
 
     def _set_pace(self, pace: object) -> None:
         target = normalize_pace(pace)

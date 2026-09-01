@@ -238,5 +238,75 @@ class BenchProportionTests(unittest.TestCase):
                 self.assertEqual(label.geometry().bottom() + 1, pet.main_feet_y())
 
 
+
+class PetBiasTests(unittest.TestCase):
+    """The companion can live against either screen edge."""
+
+    BENCH = (25, 1, 7, 133, 143)
+
+    def setUp(self) -> None:
+        self.app = _app()
+        self.api = PokeAPIClient(cache_dir())
+
+    def _pet(self, bias: str, level: str = "Lv. 24") -> FloatingPetWindow:
+        pet = FloatingPetWindow(96)
+        pet.set_bias(bias)
+        pet.show()
+        pet.set_sprite(self.api.sprite_path(4, animated=False), is_egg=False)
+        if level:
+            pet.set_level(level)
+        pet.set_bench([self.api.sprite_path(b, animated=False) for b in self.BENCH])
+        self.app.processEvents()
+        return pet
+
+    def _order(self, pet) -> list:
+        items = [("level", pet.level_label.geometry().left()),
+                 ("main", pet.label.geometry().left())]
+        items += [(f"bench{i}", l.geometry().left())
+                  for i, l in enumerate(pet.bench_labels[:len(self.BENCH)])]
+        return [name for name, _x in sorted(items, key=lambda t: t[1])]
+
+    def test_left_bias_puts_the_main_before_the_bench(self) -> None:
+        order = self._order(self._pet("left"))
+        self.assertEqual(order[0], "level")
+        self.assertEqual(order[1], "main")
+        self.assertTrue(all(n.startswith("bench") for n in order[2:]))
+
+    def test_right_bias_puts_the_bench_before_the_main(self) -> None:
+        order = self._order(self._pet("right"))
+        self.assertEqual(order[-1], "main")
+        self.assertEqual(order[-2], "level")
+        self.assertTrue(all(n.startswith("bench") for n in order[:-2]))
+
+    def test_the_level_stays_beside_the_main_under_both_biases(self) -> None:
+        for bias in ("left", "right"):
+            pet = self._pet(bias)
+            self.assertLessEqual(
+                pet.level_label.geometry().right(), pet.label.geometry().left()
+            )
+
+    def test_the_main_hugs_the_chosen_edge_of_the_widget(self) -> None:
+        left = self._pet("left")
+        self.assertLess(left.label.geometry().left(), left.width() // 2)
+        right = self._pet("right")
+        self.assertGreater(right.label.geometry().left(), right.width() // 2)
+
+    def test_both_biases_produce_the_same_size(self) -> None:
+        left, right = self._pet("left"), self._pet("right")
+        self.assertEqual((left.width(), left.height()), (right.width(), right.height()))
+
+    def test_feet_stay_aligned_under_both_biases(self) -> None:
+        for bias in ("left", "right"):
+            pet = self._pet(bias)
+            for label in pet.bench_labels[:len(self.BENCH)]:
+                self.assertEqual(label.geometry().bottom() + 1, pet.main_feet_y())
+
+    def test_an_unknown_bias_falls_back_to_left(self) -> None:
+        from poketokenbar_windows.floating_pet import normalize_pet_bias
+        for value in (None, "", "sideways", 3, "LEFT"):
+            self.assertIn(normalize_pet_bias(value), ("left", "right"))
+        self.assertEqual(normalize_pet_bias("nonsense"), "left")
+        self.assertEqual(normalize_pet_bias("RIGHT"), "right")
+
 if __name__ == "__main__":
     unittest.main()

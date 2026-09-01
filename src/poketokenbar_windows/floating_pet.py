@@ -48,6 +48,16 @@ PET_X_KEY = "floating_pet/position_x"
 PET_Y_KEY = "floating_pet/position_y"
 PET_SNAP_KEY = "floating_pet/snap_taskbar"
 PET_PARTY_KEY = "floating_pet/show_party"
+PET_BIAS_KEY = "floating_pet/bias"
+# Which screen edge the companion is meant to live against. On the right the
+# whole row extends leftwards so the main still hugs the edge; the level stays
+# immediately left of the main either way.
+PET_BIAS_LEFT = "left"
+PET_BIAS_RIGHT = "right"
+
+
+def normalize_pet_bias(value) -> str:
+    return PET_BIAS_RIGHT if str(value).strip().lower() == PET_BIAS_RIGHT else PET_BIAS_LEFT
 
 # Bench companions render at this fraction of the MAIN'S VISIBLE ARTWORK, not
 # of its box. Sprites are padded differently, so sizing against the box made
@@ -267,6 +277,7 @@ class FloatingPetWindow(QWidget):
         self.bench_labels: list[QLabel] = []
         self.bench_paths: list[Path | None] = []
         self.level_text: str = ""
+        self.bias: str = PET_BIAS_LEFT
         self.level_label = QLabel(self)
         self.level_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.level_label.setAlignment(
@@ -325,10 +336,15 @@ class FloatingPetWindow(QWidget):
         width = self.pet_size + bench_width
         area = self.sprite_area()
         lead = self.level_width()
+        right_biased = self.bias == PET_BIAS_RIGHT
         # Height stays exactly the sprite height so snapping still puts the
         # Pokemon's feet on the taskbar edge rather than floating above it.
         self.setFixedSize(lead + width, area)
-        self.label.setGeometry(lead, 0, self.pet_size, area)
+        # Right-biased puts the bench first, then the level, then the main, so
+        # the main still sits against the screen edge it is docked to.
+        main_x = bench_width + lead if right_biased else lead
+        level_x = bench_width if right_biased else 0
+        self.label.setGeometry(main_x, 0, self.pet_size, area)
         if lead and self.level_text:
             font = self._level_font()
             self.level_label.setFont(font)
@@ -341,7 +357,7 @@ class FloatingPetWindow(QWidget):
             gap = max(2, round(self.pet_size * LEVEL_GAP_SCALE))
             # Bottom-aligned with the sprite's feet.
             self.level_label.setGeometry(
-                0, area - text_height, max(0, lead - gap), text_height
+                level_x, area - text_height, max(0, lead - gap), text_height
             )
             self.level_label.show()
             self.level_label.raise_()
@@ -349,7 +365,7 @@ class FloatingPetWindow(QWidget):
             self.level_label.hide()
         # Bench sprites sit bottom-aligned with the main so the row reads as a
         # line-up standing on the same ground rather than floating boxes.
-        x = lead + self.pet_size + gap
+        x = gap if right_biased else lead + self.pet_size + gap
         baseline = self.main_feet_y()
         for label, path in zip(self.bench_labels, self.bench_paths):
             if path is None:
@@ -598,6 +614,14 @@ class FloatingPetWindow(QWidget):
         metrics = QFontMetrics(self._level_font())
         gap = max(2, round(self.pet_size * LEVEL_GAP_SCALE))
         return metrics.horizontalAdvance(text) + gap
+
+    def set_bias(self, bias: str) -> None:
+        """Which edge the main hugs; the bench extends away from that edge."""
+        normalized = normalize_pet_bias(bias)
+        if normalized == self.bias:
+            return
+        self.bias = normalized
+        self._relayout()
 
     def set_level(self, text: str) -> None:
         """Level shown in a strip beneath the sprite, e.g. 'Lv. 42'."""
@@ -912,12 +936,14 @@ class FloatingPetController(QObject):
         self.size = normalize_pet_size(settings.value(PET_SIZE_KEY, PET_DEFAULT_SIZE))
         self.snap_enabled = settings_bool(settings.value(PET_SNAP_KEY, False), False)
         self.party_visible = settings_bool(settings.value(PET_PARTY_KEY, True), True)
+        self.bias = normalize_pet_bias(settings.value(PET_BIAS_KEY, PET_BIAS_LEFT))
         self._last_bench_paths: list[Path | None] = []
         self.result: Any | None = None
         self.initial_reveal_played = False
         self.reveal_on_next_update = False
         self.alert_memory = load_alert_memory(settings.value(PET_ALERT_MEMORY_KEY, ""))
         self.pet = FloatingPetWindow(self.size)
+        self.pet.set_bias(self.bias)
         self.hover = HoverCallout()
         self.bubble = AlertBubble()
         self.bubble_timer = QTimer(self)
@@ -1015,6 +1041,27 @@ class FloatingPetController(QObject):
     def play_evolution(self, from_path: Path | None, to_path: Path | None) -> None:
         self.hide_evolution_prompt()
         self.pet.play_evolution(from_path, to_path)
+
+    def set_bias(self, bias: str) -> None:
+        """Persist the screen-edge bias, re-lay out, and park against that edge.
+
+        Choosing a side should actually move the companion there - reordering
+        the row alone would leave it sitting on the wrong edge.
+        """
+        self.bias = normalize_pet_bias(bias)
+        self.settings.setValue(PET_BIAS_KEY, self.bias)
+        self.settings.sync()
+        self.pet.set_bias(self.bias)
+        screen = self._screen_for(self.pet.x(), self.pet.y())
+        if screen is None:
+            self._save_position(self.pet.x(), self.pet.y())
+            return
+        margin = 8
+        if self.bias == PET_BIAS_RIGHT:
+            x = screen.right - margin - self._window_width()
+        else:
+            x = screen.x + margin
+        self._save_position(x, self.pet.y())
 
     def set_party_visible(self, visible: bool) -> None:
         """Show the whole party beside the main, or just the main on its own."""
