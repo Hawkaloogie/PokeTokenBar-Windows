@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import (
+    QEvent,
     QBuffer,
     QByteArray,
     QIODevice,
@@ -268,10 +269,20 @@ def tray_tooltip(
         selected = highest_relevant_limit(result.snapshot, result.limits)
         if selected is not None:
             provider, window = selected
-            parts.append(
+            entry = (
                 f"{provider.title()} {window.label}: "
                 f"{limit_percent_text(window.used_percent, limit_display_mode, compact=True)}"
             )
+            # The countdown is the thing people actually want at a glance, so
+            # it belongs here and not only inside the window's limits list.
+            if window.resets_at is not None:
+                entry += ", " + format_limit_event_time(
+                    "resets", window.resets_at, limit_time_mode,
+                    datetime.now().astimezone(),
+                )
+                if getattr(window, "estimated_reset", False):
+                    entry += " (est.)"
+            parts.append(entry)
     if show_limit and warnings:
         parts.append(min(warnings, key=lambda item: item[0])[1])
     return f"{APP_NAME} · {' · '.join(parts)}"
@@ -661,6 +672,31 @@ class DesktopPet(QWidget):
 
 
 
+class _WheelGuard(QObject):
+    """Swallow wheel events on unfocused controls.
+
+    Scrolling the settings page used to change whichever combo happened to be
+    under the cursor - silently swapping the generation or the pace. A control
+    now only responds to the wheel once it has been deliberately focused.
+    """
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.Wheel and not watched.hasFocus():
+            event.ignore()
+            return True
+        return super().eventFilter(watched, event)
+
+
+_WHEEL_GUARD = _WheelGuard()
+
+
+def _no_wheel(widget):
+    """Protect a control from stray scrolling and return it for chaining."""
+    widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    widget.installEventFilter(_WHEEL_GUARD)
+    return widget
+
+
 class SetupDialog(QDialog):
     """First-run questionnaire: which generations, and how to begin.
 
@@ -688,7 +724,7 @@ class SetupDialog(QDialog):
         gen_label = QLabel("How far should the Pokedex go?")
         gf = gen_label.font(); gf.setBold(True); gen_label.setFont(gf)
         layout.addWidget(gen_label)
-        self.generation_combo = QComboBox()
+        self.generation_combo = _no_wheel(QComboBox())
         self.generation_combo.addItem(generation_cap_label(None), None)
         for number, _region, _low, _high in GENERATIONS:
             self.generation_combo.addItem(generation_cap_label(number), number)
@@ -711,14 +747,14 @@ class SetupDialog(QDialog):
 
         starter_row = QHBoxLayout()
         starter_row.addWidget(QLabel("From"))
-        self.starter_generation_combo = QComboBox()
+        self.starter_generation_combo = _no_wheel(QComboBox())
         starter_row.addWidget(self.starter_generation_combo, 1)
         layout.addLayout(starter_row)
         self.starter_generation_combo.currentIndexChanged.connect(
             lambda _i: self._reload_starter_names()
         )
 
-        self.starter_combo = QComboBox()
+        self.starter_combo = _no_wheel(QComboBox())
         layout.addWidget(self.starter_combo)
 
         self.random_radio = QRadioButton("Surprise me with a random Pokemon")
@@ -961,7 +997,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         representative_row = QHBoxLayout()
         representative_row.addWidget(QLabel("Desktop representative"))
-        self.representative_combo = QComboBox()
+        self.representative_combo = _no_wheel(QComboBox())
         self.representative_combo.setToolTip("Choose a collected species for the tray and desktop pet")
         self.representative_combo.currentIndexChanged.connect(self._choose_representative)
         representative_row.addWidget(self.representative_combo, 1)
@@ -1057,7 +1093,7 @@ class MainWindow(QMainWindow):
             card_layout.addWidget(remove)
 
             if member is None:
-                picker = QComboBox()
+                picker = _no_wheel(QComboBox())
                 # Without this the longest Pokedex entry dictates the whole
                 # column's minimum width and the bench rack comes out uneven.
                 picker.setSizeAdjustPolicy(
@@ -1256,7 +1292,7 @@ class MainWindow(QMainWindow):
         general_layout = QVBoxLayout(general)
         row = QHBoxLayout()
         row.addWidget(QLabel("Refresh interval"))
-        self.interval_combo = QComboBox()
+        self.interval_combo = _no_wheel(QComboBox())
         for minutes in (1, 2, 5, 10, 15):
             self.interval_combo.addItem(f"{minutes} min", minutes)
         current = int(self.settings.value("refresh_minutes", 5))
@@ -1273,7 +1309,7 @@ class MainWindow(QMainWindow):
         general_layout.addWidget(self.autostart_check)
         language_row = QHBoxLayout()
         language_row.addWidget(QLabel("Pokémon names"))
-        self.language_combo = QComboBox()
+        self.language_combo = _no_wheel(QComboBox())
         for label, code in (("English", "en"), ("Español", "es"), ("Français", "fr"), ("日本語", "ja")):
             self.language_combo.addItem(label, code)
         language_index = self.language_combo.findData(self.state.language)
@@ -1296,7 +1332,7 @@ class MainWindow(QMainWindow):
         desktop_layout.addWidget(self.pet_check)
         pet_size_row = QHBoxLayout()
         pet_size_row.addWidget(QLabel("Size"))
-        self.pet_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.pet_size_slider = _no_wheel(QSlider(Qt.Orientation.Horizontal))
         self.pet_size_slider.setRange(PET_MIN_SIZE, PET_MAX_SIZE)
         self.pet_size_slider.setSingleStep(PET_SIZE_STEP)
         self.pet_size_slider.setPageStep(PET_SIZE_STEP)
@@ -1344,7 +1380,7 @@ class MainWindow(QMainWindow):
         hatch_layout = QVBoxLayout(hatch_group)
         generation_row = QHBoxLayout()
         generation_row.addWidget(QLabel("Highest generation"))
-        self.generation_combo = QComboBox()
+        self.generation_combo = _no_wheel(QComboBox())
         self.generation_combo.addItem(generation_cap_label(None), None)
         for number, _region, _low, _high in GENERATIONS:
             self.generation_combo.addItem(generation_cap_label(number), number)
@@ -1354,7 +1390,7 @@ class MainWindow(QMainWindow):
             "unaffected."
         )
         self.generation_combo.currentIndexChanged.connect(
-            lambda _index: self._save_generation_filter()
+            lambda _index: self._mark_settings_dirty()
         )
         generation_row.addWidget(self.generation_combo, 1)
         hatch_layout.addLayout(generation_row)
@@ -1372,7 +1408,7 @@ class MainWindow(QMainWindow):
         pace_layout = QVBoxLayout(pace_group)
         pace_row = QHBoxLayout()
         pace_row.addWidget(QLabel("Token pace"))
-        self.pace_combo = QComboBox()
+        self.pace_combo = _no_wheel(QComboBox())
         for key in ("standard", "light", "casual"):
             self.pace_combo.addItem(PACE_LABELS[key], key)
         self.pace_combo.setToolTip(
@@ -1381,7 +1417,7 @@ class MainWindow(QMainWindow):
         self._committed_pace = normalize_pace(self.state.pace)
         self._select_pace(self._committed_pace)
         self.pace_combo.currentIndexChanged.connect(
-            lambda _index: self.pace_changed.emit(self.pace_combo.currentData())
+            lambda _index: self._mark_settings_dirty()
         )
         pace_row.addWidget(self.pace_combo, 1)
         pace_layout.addLayout(pace_row)
@@ -1397,6 +1433,24 @@ class MainWindow(QMainWindow):
         self.pace_note.setStyleSheet("color: palette(mid);")
         pace_layout.addWidget(self.pace_note)
         layout.addWidget(pace_group)
+
+        save_row = QHBoxLayout()
+        self.settings_dirty_label = QLabel("")
+        self.settings_dirty_label.setStyleSheet("color: #d97706;")
+        save_row.addWidget(self.settings_dirty_label)
+        save_row.addStretch(1)
+        self.settings_revert_button = QPushButton("Discard")
+        self.settings_revert_button.setToolTip("Put these back the way they were")
+        self.settings_revert_button.clicked.connect(self._revert_staged_settings)
+        save_row.addWidget(self.settings_revert_button)
+        self.settings_save_button = QPushButton("Save changes")
+        self.settings_save_button.setToolTip(
+            "Apply the generation and pace choices above"
+        )
+        self.settings_save_button.clicked.connect(self._commit_staged_settings)
+        save_row.addWidget(self.settings_save_button)
+        layout.addLayout(save_row)
+        self._update_settings_dirty()
 
         layout.addWidget(danger_group)
 
@@ -1572,7 +1626,7 @@ class MainWindow(QMainWindow):
             limits_layout.addWidget(check)
         thresholds = QHBoxLayout()
         thresholds.addWidget(QLabel("Warning at"))
-        self.warning_spin = QSpinBox()
+        self.warning_spin = _no_wheel(QSpinBox())
         self.warning_spin.setRange(WARNING_MIN, WARNING_MAX)
         self.warning_spin.setSingleStep(THRESHOLD_STEP)
         self.warning_spin.setSuffix("% used")
@@ -1584,7 +1638,7 @@ class MainWindow(QMainWindow):
         self.warning_spin.valueChanged.connect(self._save_warning_threshold)
         thresholds.addWidget(self.warning_spin)
         thresholds.addWidget(QLabel("Critical at"))
-        self.critical_spin = QSpinBox()
+        self.critical_spin = _no_wheel(QSpinBox())
         self.critical_spin.setRange(CRITICAL_MIN, CRITICAL_MAX)
         self.critical_spin.setSingleStep(THRESHOLD_STEP)
         self.critical_spin.setSuffix("% used")
@@ -1602,7 +1656,7 @@ class MainWindow(QMainWindow):
         appearance = QGroupBox("Appearance")
         appearance_layout = QHBoxLayout(appearance)
         appearance_layout.addWidget(QLabel("Theme"))
-        self.theme_combo = QComboBox()
+        self.theme_combo = _no_wheel(QComboBox())
         for label, key in (("Follow Windows", "system"), ("Light", "light"), ("Dark", "dark")):
             self.theme_combo.addItem(label, key)
         self.theme_combo.setCurrentIndex(max(0, self.theme_combo.findData(self.settings.value("theme", "system"))))
@@ -1734,6 +1788,7 @@ class MainWindow(QMainWindow):
         self.state = state
         self._sync_generation_combo()
         self._sync_pace_combo()
+        self._update_settings_dirty()
         self._render_bag_shop()
         self._render_collection()
         self._render_party()
@@ -1749,6 +1804,47 @@ class MainWindow(QMainWindow):
                     combo.setCurrentIndex(index)
                     combo.blockSignals(False)
                     break
+
+    def _staged_changes(self) -> dict:
+        """Which staged settings differ from what is actually in effect."""
+        changes = {}
+        combo = getattr(self, "generation_combo", None)
+        if combo is not None:
+            staged = normalize_generation(combo.currentData())
+            if staged != normalize_generation(self.state.generation_filter):
+                changes["generation"] = combo.currentData()
+        pace = getattr(self, "pace_combo", None)
+        if pace is not None:
+            staged_pace = normalize_pace(pace.currentData())
+            if staged_pace != normalize_pace(getattr(self, "_committed_pace", self.state.pace)):
+                changes["pace"] = staged_pace
+        return changes
+
+    def _update_settings_dirty(self) -> None:
+        if getattr(self, "settings_save_button", None) is None:
+            return
+        changes = self._staged_changes()
+        self.settings_save_button.setEnabled(bool(changes))
+        self.settings_revert_button.setEnabled(bool(changes))
+        self.settings_dirty_label.setText(
+            "Unsaved changes" if changes else ""
+        )
+
+    def _mark_settings_dirty(self) -> None:
+        self._update_settings_dirty()
+
+    def _revert_staged_settings(self) -> None:
+        self._sync_generation_combo()
+        self._sync_pace_combo()
+        self._update_settings_dirty()
+
+    def _commit_staged_settings(self) -> None:
+        changes = self._staged_changes()
+        if "generation" in changes:
+            self.generation_filter_changed.emit(changes["generation"])
+        if "pace" in changes:
+            self.pace_changed.emit(changes["pace"])
+        self._update_settings_dirty()
 
     def _sync_pace_combo(self) -> None:
         """Move the picker to the saved pace and remember it as committed."""

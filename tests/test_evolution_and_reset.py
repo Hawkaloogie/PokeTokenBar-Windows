@@ -192,5 +192,71 @@ class FillMissingResetTests(unittest.TestCase):
         self.assertFalse(filled.windows[0].estimated_reset)
 
 
+
+class ResetVisibilityTests(unittest.TestCase):
+    """The countdown must reach the surfaces people actually glance at.
+
+    It originally rendered only inside the window's Official limits list, so
+    from the tray icon or the desktop pet there was no reset time anywhere.
+    """
+
+    def _result(self, window):
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from poketokenbar_windows.usage import ProviderUsage, UsageSnapshot
+        from poketokenbar_windows.ui import RefreshResult
+
+        # A provider with real usage is required, or the tooltip skips the
+        # limit line altogether and there is nothing to attach a reset to.
+        return RefreshResult(
+            UsageSnapshot(providers={"claude": ProviderUsage("claude", today_tokens=1000)}),
+            {"claude": ProviderLimits(provider="claude", windows=[window])},
+            {},
+            GameState(),
+            [],
+            None,
+            "Pokemon Egg",
+        )
+
+    def test_the_tray_tooltip_shows_the_countdown(self) -> None:
+        from poketokenbar_windows.ui import tray_tooltip
+
+        window = LimitWindow(
+            "5-hour", 40.0,
+            resets_at=datetime.now().astimezone() + timedelta(hours=2),
+        )
+        self.assertIn("resets in", tray_tooltip(self._result(window)))
+
+    def test_the_tray_tooltip_marks_an_estimate(self) -> None:
+        from poketokenbar_windows.ui import tray_tooltip
+
+        window = LimitWindow(
+            "5-hour", 40.0,
+            resets_at=datetime.now().astimezone() + timedelta(hours=2),
+            estimated_reset=True,
+        )
+        self.assertIn("(est.)", tray_tooltip(self._result(window)))
+
+    def test_the_pet_hover_shows_the_countdown(self) -> None:
+        from poketokenbar_windows.pet_logic import pet_hover_text
+        from poketokenbar_windows.usage import ProviderUsage, UsageSnapshot
+
+        window = LimitWindow(
+            "5-hour", 40.0,
+            resets_at=datetime.now().astimezone() + timedelta(hours=2),
+        )
+        text = pet_hover_text(
+            UsageSnapshot(providers={"claude": ProviderUsage("claude", today_tokens=1000)}),
+            {"claude": ProviderLimits(provider="claude", windows=[window])},
+        )
+        self.assertIn("resets in", text)
+
+    def test_no_reset_means_no_invented_countdown(self) -> None:
+        from poketokenbar_windows.ui import tray_tooltip
+
+        text = tray_tooltip(self._result(LimitWindow("5-hour", 40.0)))
+        self.assertNotIn("resets in", text)
+
 if __name__ == "__main__":
     unittest.main()

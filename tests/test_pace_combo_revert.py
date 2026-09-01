@@ -75,7 +75,10 @@ class PaceComboRevertTests(unittest.TestCase):
         return state, window, controller
 
     def _pick(self, window, pace: str) -> None:
+        """Stage a pace and press Save - settings no longer apply on scroll."""
         window.pace_combo.setCurrentIndex(window.pace_combo.findData(pace))
+        self.app.processEvents()
+        window.settings_save_button.click()
         self.app.processEvents()
 
     def test_cancelling_returns_the_picker_to_the_live_pace(self) -> None:
@@ -154,6 +157,69 @@ class PaceComboRevertTests(unittest.TestCase):
                 f"cancelling {start}->{attempted} left the picker wrong",
             )
             self.assertEqual(controller.state.pace, start)
+
+
+class StagedSettingsTests(unittest.TestCase):
+    """Settings stage behind Save, so a stray scroll cannot change the game."""
+
+    def setUp(self) -> None:
+        self.app = _app()
+        self._original_warning = ui.QMessageBox.warning
+        self.counter = 0
+
+    def tearDown(self) -> None:
+        ui.QMessageBox.warning = self._original_warning
+
+    def _build(self, pace: str = "standard"):
+        self.counter += 1
+        state = GameState()
+        set_pace(state, pace)
+        state.mon = MonState(203, [203], 0, 0, "common", False, "Hardy")
+        key = f"PTBStaged{self.counter}"
+        window = ui.MainWindow(state, QSettings(key, key), PokeAPIClient(cache_dir()))
+        window.set_state(state)
+        controller = _Controller(state, window)
+        window.pace_changed.connect(controller._set_pace)
+        window.generation_filter_changed.connect(controller._set_generation_filter)
+        return state, window, controller
+
+    def test_changing_a_combo_alone_does_not_apply_it(self) -> None:
+        _state, window, controller = self._build("standard")
+        ui.QMessageBox.warning = staticmethod(
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not prompt yet"))
+        )
+        window.pace_combo.setCurrentIndex(window.pace_combo.findData("casual"))
+        self.app.processEvents()
+        self.assertEqual(controller.state.pace, "standard", "a scroll changed the game")
+        self.assertIsNotNone(controller.state.mon)
+
+    def test_the_save_button_reports_unsaved_changes(self) -> None:
+        _state, window, _controller = self._build("standard")
+        self.assertFalse(window.settings_save_button.isEnabled())
+        self.assertEqual(window.settings_dirty_label.text(), "")
+        window.pace_combo.setCurrentIndex(window.pace_combo.findData("casual"))
+        self.app.processEvents()
+        self.assertTrue(window.settings_save_button.isEnabled())
+        self.assertIn("Unsaved", window.settings_dirty_label.text())
+
+    def test_discard_puts_the_controls_back(self) -> None:
+        _state, window, controller = self._build("standard")
+        window.pace_combo.setCurrentIndex(window.pace_combo.findData("casual"))
+        self.app.processEvents()
+        window.settings_revert_button.click()
+        self.app.processEvents()
+        self.assertEqual(window.pace_combo.currentData(), "standard")
+        self.assertFalse(window.settings_save_button.isEnabled())
+        self.assertEqual(controller.state.pace, "standard")
+
+    def test_a_staged_generation_only_applies_on_save(self) -> None:
+        _state, window, controller = self._build("standard")
+        window.generation_combo.setCurrentIndex(window.generation_combo.findData(2))
+        self.app.processEvents()
+        self.assertIsNone(controller.state.generation_filter)
+        window.settings_save_button.click()
+        self.app.processEvents()
+        self.assertEqual(controller.state.generation_filter, 2)
 
 
 if __name__ == "__main__":

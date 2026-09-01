@@ -353,6 +353,14 @@ def pet_hover_text(
                 f"{provider.title()} {window.label}: "
                 f"{limit_percent_text(window.used_percent, display_mode, compact=True)}"
             )
+            if window.resets_at is not None:
+                reset_line = format_limit_event_time(
+                    "resets", window.resets_at, time_mode,
+                    datetime.now().astimezone(),
+                )
+                if getattr(window, "estimated_reset", False):
+                    reset_line += " (est.)"
+                lines.append(reset_line)
 
     reset_warnings: list[tuple[float, str]] = []
     if show_limit:
