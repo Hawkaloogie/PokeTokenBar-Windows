@@ -991,10 +991,8 @@ class MainWindow(QMainWindow):
         self.week_card = MetricCard("This week")
         self.wallet_card = MetricCard("Shop wallet")
         self.wallet_card.setToolTip(
-            "Game currency earned from your usage. On an easier pace each
-"
-            "real token credits more, so this runs ahead of the token
-"
+            "Game currency earned from your usage. On an easier pace each "
+            "real token credits more, so this runs ahead of the token "
             "counters above - those always show your actual usage."
         )
         metrics.addWidget(self.today_card, 0, 0)
