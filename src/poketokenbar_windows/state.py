@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -19,10 +20,19 @@ from .pokemon import (
     egg_price,
     egg_hatch_threshold,
     item_price,
+    trade_reroll_price,
     normalize_generation,
     normalize_pace,
     phase_threshold,
     rare_candy_xp,
+)
+from .trading import (
+    TradeOffer,
+    eligible_catches,
+    generate_offers,
+    load_offers,
+    offer_to_dict,
+    value_of,
 )
 from .windows import state_dir
 
@@ -64,6 +74,8 @@ class CatchRecord:
     is_shiny: bool
     nature: str
     caught_at: str
+    # A favourite is never offered as trade fodder and cannot be traded away.
+    is_favourite: bool = False
 
 
 @dataclass(slots=True)
@@ -107,6 +119,12 @@ class GameState:
     # burned, so waiting to watch never costs progress.
     pending_evolution: bool = False
     banked_tokens: int = 0
+    # Standing trade offers, and the usage window they belong to. Offers hold
+    # until that window resets, so the counter has a real clock.
+    trade_offers: list[TradeOffer] = field(default_factory=list)
+    trades_window: str = ""
+    # One paid reroll per window; cleared when the window rolls over.
+    trades_rerolled: bool = False
 
     @property
     def wallet(self) -> int:
@@ -114,7 +132,12 @@ class GameState:
 
     @property
     def shiny_charm_active(self) -> bool:
+        """True when a charm is held. Charms are consumed by the next hatch."""
         return self.inventory.get("shiny_charm", 0) > 0
+
+    @property
+    def shiny_charms(self) -> int:
+        return max(0, int(self.inventory.get("shiny_charm", 0)))
 
 
 @dataclass(slots=True, frozen=True)
@@ -295,6 +318,7 @@ def _coerce_catch(raw: Any) -> CatchRecord | None:
         nature = str(raw["nature"])
         caught_at = str(raw["caught_at"])
         is_shiny = bool(raw["is_shiny"])
+        is_favourite = bool(raw.get("is_favourite", False))
     except (KeyError, TypeError, ValueError):
         return None
     if species_id <= 0 or base_id <= 0:
@@ -307,6 +331,7 @@ def _coerce_catch(raw: Any) -> CatchRecord | None:
         is_shiny=is_shiny,
         nature=nature,
         caught_at=caught_at,
+        is_favourite=is_favourite,
     )
 
 
@@ -385,6 +410,9 @@ class StateStore:
                 pace=normalize_pace(raw.get("pace")),
                 pending_evolution=bool(raw.get("pending_evolution", False)),
                 banked_tokens=max(0, int(raw.get("banked_tokens", 0) or 0)),
+                trade_offers=load_offers(raw.get("trade_offers")),
+                trades_window=str(raw.get("trades_window", "")),
+                trades_rerolled=bool(raw.get("trades_rerolled", False)),
                 setup_completed=bool(
                     raw.get("setup_completed", bool(mon is not None or catches))
                 ),
@@ -398,7 +426,9 @@ class StateStore:
 
     def save(self, state: GameState) -> None:
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(asdict(state), indent=2, ensure_ascii=False), encoding="utf-8")
+        payload = asdict(state)
+        payload["trade_offers"] = [offer_to_dict(o) for o in (state.trade_offers or [])]
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(self.path)
 
 
@@ -481,9 +511,14 @@ def apply_usage(state: GameState, delta: int, api: PokeAPIClient) -> list[str]:
             remaining -= take
             if state.egg_usage < egg_hatch_threshold(state.pace):
                 break
+            # A charm is spent on this hatch whether or not it pays off - that
+            # is the gamble, and it is what makes holding one feel like a choice.
+            charm = state.shiny_charm_active
+            if charm:
+                state.inventory["shiny_charm"] = state.shiny_charms - 1
             hatch = api.hatch(
                 minimum_rarity=state.egg_tier,
-                shiny_charm=state.shiny_charm_active,
+                shiny_charm=charm,
                 generation=state.generation_filter,
             )
             state.mon = MonState(
@@ -552,8 +587,6 @@ def buy_item(state: GameState, item: str) -> tuple[bool, str]:
     }
     if item not in prices:
         return False, "Unknown item"
-    if item == "shiny_charm" and state.shiny_charm_active:
-        return False, "Shiny Charm is already active"
     price = prices[item]
     if state.wallet < price:
         return False, "Not enough tokens"
@@ -746,10 +779,13 @@ def reset_game_state(state: GameState) -> GameState:
 
 def start_with_species(state: GameState, species_id: int, api: PokeAPIClient) -> bool:
     """Seed the main slot with a chosen starter instead of an egg."""
+    charm = state.shiny_charm_active
     try:
-        hatched = api.hatch_species(species_id, shiny_charm=state.shiny_charm_active)
+        hatched = api.hatch_species(species_id, shiny_charm=charm)
     except Exception:  # noqa: BLE001
         return False
+    if charm:
+        state.inventory["shiny_charm"] = state.shiny_charms - 1
     if state.mon is not None:
         # Bench whoever is already in the main slot rather than overwriting
         # them; if the bench is full the starter is refused outright.
@@ -810,6 +846,116 @@ def evolution_target(state: GameState) -> int | None:
     if mon.stage_index >= len(mon.path_ids) - 1:
         return None
     return mon.path_ids[mon.stage_index + 1]
+
+
+def set_favourite(state: GameState, catch_index: int, favourite: bool = True) -> bool:
+    """Star or unstar a Pokedex entry. Favourites are safe from trading."""
+    catches = state.catches or []
+    if not 0 <= catch_index < len(catches):
+        return False
+    catches[catch_index].is_favourite = bool(favourite)
+    return True
+
+
+def favourite_catches(state: GameState) -> list[int]:
+    return [i for i, c in enumerate(state.catches or []) if c.is_favourite]
+
+
+def refresh_trades(
+    state: GameState,
+    api: PokeAPIClient,
+    window_key: str,
+    *,
+    force: bool = False,
+    count: int = 3,
+) -> bool:
+    """Regenerate offers when the usage window has rolled over.
+
+    `window_key` identifies the current 5-hour block, so offers stay put until
+    it resets. A forced refresh is the paid reroll.
+    """
+    key = str(window_key or "")
+    if not force and state.trade_offers and state.trades_window == key:
+        return False
+    seed = f"{key}|{state.used_since_install}" if not force else None
+    state.trade_offers = generate_offers(
+        api, count=count, generation_filter=state.generation_filter, seed=seed
+    )
+    if state.trades_window != key:
+        # A new window restores the reroll.
+        state.trades_rerolled = False
+    state.trades_window = key
+    return True
+
+
+def can_reroll_trades(state: GameState) -> tuple[bool, str]:
+    """Whether the single paid reroll is available right now."""
+    if state.trades_rerolled:
+        return False, "Already rerolled - new offers arrive when your limit resets"
+    price = trade_reroll_price(state.pace)
+    if state.wallet < price:
+        return False, f"Costs {price:,} tokens"
+    return True, ""
+
+
+def reroll_trades(
+    state: GameState, api: PokeAPIClient, window_key: str
+) -> tuple[bool, str]:
+    """Spend the one reroll this window allows."""
+    allowed, reason = can_reroll_trades(state)
+    if not allowed:
+        return False, reason
+    price = trade_reroll_price(state.pace)
+    state.spent_tokens += price
+    state.trades_rerolled = True
+    refresh_trades(state, api, window_key, force=True)
+    state.trades_window = str(window_key or "")
+    return True, "New offers"
+
+
+def trade_candidates(state: GameState, offer_index: int) -> list[int]:
+    """Pokedex entries that could pay for this offer."""
+    offers = state.trade_offers or []
+    if not 0 <= offer_index < len(offers):
+        return []
+    return eligible_catches(state, offers[offer_index])
+
+
+def accept_trade(
+    state: GameState, offer_index: int, catch_index: int
+) -> tuple[bool, str]:
+    """Hand over one Pokemon and receive the offered one.
+
+    The Pokemon is the entire price - no tokens change hands.
+    """
+    offers = state.trade_offers or []
+    if not 0 <= offer_index < len(offers):
+        return False, "That offer is gone"
+    offer = offers[offer_index]
+    catches = state.catches or []
+    if not 0 <= catch_index < len(catches):
+        return False, "That Pokemon is gone"
+    given = catches[catch_index]
+    if given.is_favourite:
+        return False, "Favourites cannot be traded away"
+    if catch_index not in eligible_catches(state, offer):
+        return False, (
+            f"{offer.describe_wanted().capitalize()} is needed for this trade"
+        )
+    received = CatchRecord(
+        species_id=offer.gives_id,
+        base_id=offer.gives_id,
+        path_ids=list(offer.gives_path),
+        rarity=offer.gives_rarity,
+        is_shiny=offer.gives_shiny,
+        nature=random.choice(NATURES),
+        caught_at=datetime.now().astimezone().isoformat(),
+    )
+    catches.pop(catch_index)
+    catches.append(received)
+    state.trade_offers = [o for i, o in enumerate(offers) if i != offer_index]
+    normalize_representative(state)
+    return True, "Trade complete"
 
 
 def set_pace(state: GameState, pace: Any) -> str:

@@ -118,7 +118,7 @@ class UITests(unittest.TestCase):
         self.assertFalse(window.progress.isTextVisible())
         self.assertEqual(window.progress.height(), 12)
 
-    def test_using_rare_candy_requests_a_full_refresh_without_an_evolution(self):
+    def test_using_rare_candy_advances_progress_and_requests_a_refresh(self):
         controller = TrayController.__new__(TrayController)
         controller.state_lock = threading.Lock()
         controller.state = GameState(
@@ -138,7 +138,11 @@ class UITests(unittest.TestCase):
             controller._use_item("rare_candy")
 
         self.assertEqual(controller.state.inventory["rare_candy"], 0)
-        self.assertEqual(controller.state.mon.used_at_stage, RARE_CANDY_XP)
+        # Candy is now worth more than it costs, so it can carry a whole stage
+        # and leave the companion waiting to evolve. What matters is that all of
+        # its value landed, none of it was lost, and a refresh was requested.
+        delivered = controller.state.mon.used_at_stage + controller.state.banked_tokens
+        self.assertEqual(delivered, RARE_CANDY_XP, "candy value was lost")
         controller.refresh.assert_called_once_with()
 
     def test_limit_progress_widget_does_not_duplicate_text(self):

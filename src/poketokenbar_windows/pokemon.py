@@ -16,11 +16,18 @@ GRADUATION_TOTALS = {
     "rare": 3_000_000_000,
     "legendary": 6_000_000_000,
 }
-RARE_CANDY_XP = 100_000_000
-RARE_CANDY_PRICE = 500_000_000
+# Must exceed RARE_CANDY_PRICE or buying candy is strictly worse than waiting -
+# it was 100M for 500M, a 5x loss nobody had a reason to ever pay. Worth buying
+# at 1.5x, but deliberately well short of a full line (750M for a common) so one
+# purchase accelerates progress instead of skipping it.
+RARE_CANDY_XP = 300_000_000
+RARE_CANDY_PRICE = 200_000_000
 MINT_PRICE = 100_000_000
 SHINY_CHARM_PRICE = 3_000_000_000
 FRESH_EGG_PRICE = 1_000_000_000
+# One reroll per window. Deliberately about a quarter of a fresh egg: enough
+# that you weigh it against an egg, cheap enough to use when a set is useless.
+TRADE_REROLL_PRICE = 250_000_000
 SHINY_DENOMINATOR = 64
 SHINY_CHARM_DENOMINATOR = 48
 DITTO_SPECIES_ID = 132
@@ -104,8 +111,13 @@ def item_price(item: str, pace: Any = DEFAULT_PACE) -> int:
         "rare_candy": RARE_CANDY_PRICE,
         "mint": MINT_PRICE,
         "shiny_charm": SHINY_CHARM_PRICE,
+        "trade_reroll": TRADE_REROLL_PRICE,
     }[item]
     return scaled(base, pace)
+
+
+def trade_reroll_price(pace: Any = DEFAULT_PACE) -> int:
+    return scaled(TRADE_REROLL_PRICE, pace)
 
 
 RARITY_RANK = {"common": 0, "uncommon": 1, "rare": 2, "legendary": 3}
