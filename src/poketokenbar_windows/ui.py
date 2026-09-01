@@ -167,6 +167,7 @@ from .state import (
     evolution_target,
     accept_trade,
     can_reroll_trades,
+    catch_index_for,
     party_members,
     refresh_trades,
     representative_subject,
@@ -446,6 +447,20 @@ def _pokeball_icon(size: int = 64) -> QIcon:
     icon.addPixmap(_pokeball_pixmap(32))
     icon.addPixmap(_pokeball_pixmap(16))
     return icon
+
+
+def _silhouette(pixmap: QPixmap) -> QPixmap:
+    """Flat grey cut-out, the way an unseen Pokedex entry is drawn."""
+    if pixmap.isNull():
+        return pixmap
+    canvas = QPixmap(pixmap.size())
+    canvas.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(canvas)
+    painter.drawPixmap(0, 0, pixmap)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    painter.fillRect(canvas.rect(), QColor(110, 118, 132, 190))
+    painter.end()
+    return canvas
 
 
 def _sprite_pixmap(path: Path | None, box: int = 96) -> QPixmap:
@@ -869,6 +884,9 @@ class MainWindow(QMainWindow):
         self.reveal_target_pixmap = QPixmap()
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(application_icon())
+        # A provisional floor; the real one is derived from the built layout at
+        # the end of __init__, because a hardcoded minimum let the window shrink
+        # below its own content and clip the dropdowns.
         self.setMinimumSize(520, 640)
         self.resize(560, 740)
 
@@ -879,6 +897,10 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_shop(), "Shop")
         self.tabs.addTab(self._wrap_scroll(self._build_settings()), "Settings")
         self.setCentralWidget(self.tabs)
+        self._apply_content_minimum()
+        # The layout keeps growing for a turn after construction, so re-derive
+        # the floor once the event loop has settled.
+        QTimer.singleShot(0, self._apply_content_minimum)
         self.statusBar().showMessage("Ready")
         refresh_shortcut = QAction("Refresh", self)
         refresh_shortcut.setShortcut("Ctrl+R")
@@ -1013,18 +1035,15 @@ class MainWindow(QMainWindow):
         root = QWidget()
         layout = QVBoxLayout(root)
         layout.setContentsMargins(8, 8, 8, 8)
-        representative_row = QHBoxLayout()
-        representative_row.addWidget(QLabel("Desktop representative"))
+        # The desktop always shows your main Pokemon, so a separate
+        # 'representative' picker was a second answer to the same question.
         self.representative_combo = _no_wheel(QComboBox())
-        self.representative_combo.setToolTip("Choose a collected species for the tray and desktop pet")
-        self.representative_combo.currentIndexChanged.connect(self._choose_representative)
-        representative_row.addWidget(self.representative_combo, 1)
-        layout.addLayout(representative_row)
+        self.representative_combo.hide()
         inner = QTabWidget()
         inner.addTab(self._wrap_scroll(self._build_party_page()), "Party")
         inner.addTab(self._wrap_scroll(self._build_trades_page()), "Trades")
         inner.addTab(self._wrap_scroll(self._build_dex_page()), "Pokédex")
-        inner.addTab(self._wrap_scroll(self._build_catch_page()), "Catch log")
+        inner.addTab(self._wrap_scroll(self._build_catch_page()), "Oak's Ranch")
         layout.addWidget(inner)
         return root
 
@@ -1102,6 +1121,18 @@ class MainWindow(QMainWindow):
         caption_font.setPointSize(caption_font.pointSize() + 1)
         main_caption.setFont(caption_font)
         main_layout.addWidget(main_caption)
+        main_star_row = QHBoxLayout()
+        main_star_row.addStretch(1)
+        main_star_row.addWidget(
+            self._favourite_star(
+                catch_index_for(self.state, main),
+                bool(main is not None
+                     and catch_index_for(self.state, main) >= 0
+                     and self.state.catches[catch_index_for(self.state, main)].is_favourite),
+            )
+        )
+        main_star_row.addStretch(1)
+        main_layout.addLayout(main_star_row)
         main_card.setMinimumHeight(220)
         # Span all three columns so the main lines up flush with the bench rack
         # instead of stopping two-thirds across.
@@ -1118,6 +1149,19 @@ class MainWindow(QMainWindow):
             card_layout = QVBoxLayout(card)
             card_layout.addWidget(self._party_sprite(member, 56))
             card_layout.addWidget(self._party_caption(member, "Empty slot"))
+            if member is not None:
+                bench_index = catch_index_for(self.state, member)
+                star_row = QHBoxLayout()
+                star_row.addStretch(1)
+                star_row.addWidget(
+                    self._favourite_star(
+                        bench_index,
+                        bool(bench_index >= 0
+                             and self.state.catches[bench_index].is_favourite),
+                    )
+                )
+                star_row.addStretch(1)
+                card_layout.addLayout(star_row)
 
             swap = QPushButton("Make main")
             swap.setEnabled(member is not None or main is not None)
@@ -1127,9 +1171,12 @@ class MainWindow(QMainWindow):
             swap.clicked.connect(lambda _checked=False, index=slot: self.party_swap_requested.emit(index))
             card_layout.addWidget(swap)
 
-            remove = QPushButton("Remove")
+            remove = QPushButton("To the Ranch")
             remove.setEnabled(member is not None)
-            remove.setToolTip("Free this slot. The Pokemon stays in your Pokedex.")
+            remove.setToolTip(
+                "Sends this Pokemon to Professor Oak's Ranch. It stays yours "
+                "and can be brought back to the party any time."
+            )
             remove.clicked.connect(lambda _checked=False, index=slot: self.party_clear_requested.emit(index))
             card_layout.addWidget(remove)
 
@@ -1141,7 +1188,7 @@ class MainWindow(QMainWindow):
                     QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
                 )
                 picker.setMinimumContentsLength(10)
-                picker.addItem("Add from Pokedex...", None)
+                picker.addItem("Call from the Ranch...", None)
                 for position, catch in enumerate(self.state.catches):
                     # Offering one already in the party would clone it.
                     if catch_in_use(self.state, catch, ignore_slot=slot):
@@ -1191,6 +1238,123 @@ class MainWindow(QMainWindow):
             f"{member.rarity.title()} · {member.nature}"
         )
         return label
+
+    def _evolution_line_for(self, species_id: int) -> list[int]:
+        """The recorded evolution line a species belongs to.
+
+        Taken from your own Pokedex entries rather than a fresh API call, so it
+        is exactly the line that Pokemon will follow.
+        """
+        for catch in self.state.catches or []:
+            path = list(catch.path_ids or [])
+            if species_id in path:
+                return path
+        for member in party_members(self.state):
+            if member is None:
+                continue
+            path = list(member.path_ids or [])
+            if species_id in path:
+                return path
+        return [species_id]
+
+    def show_evolution_line(self, species_id: int) -> None:
+        """Show a species' whole line and which forms you have collected."""
+        path = self._evolution_line_for(species_id)
+        owned = self._owned_species()
+        dialog = QDialog(self)
+        dialog.setWindowTitle(
+            f"{self.api.localized_name(species_id, self.state.language)} - evolution line"
+        )
+        layout = QVBoxLayout(dialog)
+        caption = QLabel(
+            "Collected forms are shown in colour. Raise this Pokemon to reach "
+            "the rest of its line."
+            if len(path) > 1 else
+            "This Pokemon does not evolve."
+        )
+        caption.setWordWrap(True)
+        caption.setStyleSheet("color: palette(mid);")
+        layout.addWidget(caption)
+
+        row = QHBoxLayout()
+        for position, stage_id in enumerate(path):
+            if position:
+                arrow = QLabel("→")
+                arrow.setStyleSheet("color: palette(mid); font-size: 20px;")
+                row.addWidget(arrow)
+            have = stage_id in owned
+            cell = QVBoxLayout()
+            sprite = QLabel()
+            sprite.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            sprite.setFixedSize(96, 96)
+            pix = _sprite_pixmap(
+                self.api.sprite_path(stage_id, shiny=bool(owned.get(stage_id)), animated=False),
+                88,
+            )
+            if pix.isNull():
+                pix = _pokeball_pixmap(88)
+            if not have:
+                # Uncollected forms show as a silhouette, the way a Pokedex does.
+                pix = _silhouette(pix)
+            sprite.setPixmap(pix)
+            cell.addWidget(sprite)
+            name = QLabel(self.api.localized_name(stage_id, self.state.language))
+            name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            nf = name.font(); nf.setBold(have); name.setFont(nf)
+            cell.addWidget(name)
+            status = QLabel("Collected" if have else "Not yet")
+            status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            status.setStyleSheet(
+                "color: #16a34a;" if have else "color: palette(mid);"
+            )
+            cell.addWidget(status)
+            row.addLayout(cell)
+        layout.addLayout(row)
+
+        have_count = sum(1 for stage in path if stage in owned)
+        summary = QLabel(f"You have {have_count} of {len(path)} in this line.")
+        summary.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(summary)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def _favourite_star(self, catch_index: int, favourite: bool) -> QPushButton:
+        """Star toggle bound to a Pokedex entry, usable from any view."""
+        # Not checkable: a checkable button renders Qt's own selected
+        # highlight over the colour, which reads as a smudge rather than a
+        # state. The fill is painted explicitly instead.
+        star = QPushButton("★" if favourite else "☆")
+        star.setFixedSize(34, 28)
+        star.setToolTip(
+            "Favourited - never offered in trades and can never be traded away"
+            if favourite else
+            "Favourite this Pokemon so it can never be traded away"
+        )
+        if favourite:
+            star.setStyleSheet(
+                "QPushButton { background: #f59e0b; color: #1f2430; border: none; "
+                "border-radius: 6px; font-size: 16px; font-weight: bold; } "
+                "QPushButton:hover { background: #d97706; }"
+            )
+        else:
+            star.setStyleSheet(
+                "QPushButton { background: rgba(127, 140, 160, 0.22); color: #9aa4b2; "
+                "border: none; border-radius: 6px; font-size: 16px; } "
+                "QPushButton:hover { background: rgba(245, 158, 11, 0.30); color: #f59e0b; }"
+            )
+        if catch_index >= 0:
+            star.clicked.connect(
+                lambda _checked=False, index=catch_index, value=not favourite:
+                    self.favourite_toggled.emit(index, value)
+            )
+        else:
+            star.setEnabled(False)
+            star.setToolTip("This Pokemon has no Pokedex entry yet")
+        return star
 
     def _build_trades_page(self) -> QWidget:
         root = QWidget()
@@ -1297,7 +1461,7 @@ class MainWindow(QMainWindow):
                     )
                 )
             else:
-                picker.addItem("Nothing you own qualifies", None)
+                picker.addItem("None eligible", None)
                 picker.setEnabled(False)
                 accept.setEnabled(False)
                 accept.setToolTip(f"You need {offer.describe_wanted()}")
@@ -1643,6 +1807,10 @@ class MainWindow(QMainWindow):
         self.generation_combo.currentIndexChanged.connect(
             lambda _index: self._mark_settings_dirty()
         )
+        self.generation_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.generation_combo.setMinimumContentsLength(16)
         self.generation_combo.setMinimumWidth(240)
         self._settings_row(
             hatch, "Highest generation", self.generation_combo,
@@ -1665,6 +1833,10 @@ class MainWindow(QMainWindow):
         self.pace_combo.currentIndexChanged.connect(
             lambda _index: self._mark_settings_dirty()
         )
+        self.pace_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.pace_combo.setMinimumContentsLength(16)
         self.pace_combo.setMinimumWidth(240)
         self._settings_row(
             pace, "Token pace", self.pace_combo,
@@ -2051,6 +2223,24 @@ class MainWindow(QMainWindow):
         )
         content.addStretch(1)
         return page
+
+    def _apply_content_minimum(self) -> None:
+        """Never let the window shrink below what its own content needs.
+
+        The minimum was hardcoded at 520x640 while the laid-out content needs
+        far more, so dragging the window small clipped controls - dropdowns
+        especially. Derive it from the built layout instead of guessing.
+        """
+        hint = self.minimumSizeHint()
+        self.setMinimumSize(
+            max(520, hint.width()),
+            max(640, hint.height()),
+        )
+        if self.width() < self.minimumWidth() or self.height() < self.minimumHeight():
+            self.resize(
+                max(self.width(), self.minimumWidth()),
+                max(self.height(), self.minimumHeight()),
+            )
 
     def _setting_check(self, text: str, key: str, default: bool) -> QCheckBox:
         check = QCheckBox(text)
@@ -2705,7 +2895,23 @@ class MainWindow(QMainWindow):
                 column % 2,
             )
 
-        for catch in reversed(catches):
+        # Oak's Ranch holds what is NOT in your party - the Pokemon resting at
+        # home rather than the six travelling with you.
+        in_party = {
+            catch_index_for(self.state, member)
+            for member in party_members(self.state)
+            if member is not None
+        }
+        in_party.discard(-1)
+        resting = [
+            catch for index, catch in enumerate(catches) if index not in in_party
+        ]
+        self.catch_empty.setVisible(not resting)
+        if not resting:
+            self.catch_empty.setText(
+                "Every Pokemon you own is in your party right now."
+            )
+        for catch in reversed(resting):
             self.catch_list.addWidget(self._catch_card(catch, current is catch))
 
     def _current_catch(self):
@@ -2744,6 +2950,16 @@ class MainWindow(QMainWindow):
         number = QLabel(f"{'✨ ' if shiny else ''}#{species_id:03d}")
         number.setAlignment(Qt.AlignmentFlag.AlignCenter)
         number.setStyleSheet("color: #6b7280;")
+        favourite_index = next(
+            (i for i, c in enumerate(self.state.catches or [])
+             if c.species_id == species_id and c.is_favourite),
+            -1,
+        )
+        if favourite_index >= 0:
+            starred = QLabel("★ Favourite")
+            starred.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            starred.setStyleSheet("color: #f59e0b; border: none;")
+            layout.addWidget(starred)
         generation = QLabel(generation_label(species_id))
         generation.setAlignment(Qt.AlignmentFlag.AlignCenter)
         generation.setStyleSheet("color: #6b7280;")
@@ -2751,6 +2967,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(number)
         layout.addWidget(name)
         layout.addWidget(generation)
+        details = QPushButton("Evolution line")
+        details.setToolTip("See this Pokemon's whole line and what you have collected")
+        details.clicked.connect(
+            lambda _checked=False, target=species_id: self.show_evolution_line(target)
+        )
+        layout.addWidget(details)
         if shiny:
             toggle = QPushButton("Normal / ✨ Shiny")
             toggle.setToolTip("Alternate this owned species between its normal and Shiny sprite")
@@ -2792,32 +3014,11 @@ class MainWindow(QMainWindow):
             header.addWidget(badge)
         if catch.is_shiny:
             header.addWidget(QLabel("✨"))
-        star = QPushButton("★" if catch.is_favourite else "☆")
-        star.setCheckable(True)
-        star.setChecked(bool(catch.is_favourite))
-        star.setFixedWidth(34)
-        star.setToolTip(
-            "Favourited - can never be traded away"
-            if catch.is_favourite else
-            "Favourite this Pokemon so it can never be traded away"
-        )
-        star.setStyleSheet(
-            "QPushButton { border: none; font-size: 18px; color: #9aa4b2; } "
-            "QPushButton:checked { color: #f59e0b; }"
-        )
         try:
             catch_index = self.state.catches.index(catch)
         except ValueError:
             catch_index = -1
-        if catch_index >= 0:
-            star.clicked.connect(
-                lambda checked=False, index=catch_index: self.favourite_toggled.emit(
-                    index, bool(checked)
-                )
-            )
-        else:
-            star.setEnabled(False)
-        header.addWidget(star)
+        header.addWidget(self._favourite_star(catch_index, bool(catch.is_favourite)))
         layout.addLayout(header)
 
         summary = QLabel(
@@ -3021,6 +3222,18 @@ class TrayController(QObject):
         self.countdown_timer.timeout.connect(self._tick_countdown)
         self.countdown_timer.start()
         self.window.evolve_requested.connect(self.start_evolution)
+        if self.state.representative_species_id is not None:
+            # The representative picker is gone - the main Pokemon is the
+            # desktop companion now. Clear any stale pick from an older save.
+            try:
+                with self.state_lock:
+                    candidate = copy.deepcopy(self.state)
+                    candidate.representative_species_id = None
+                    candidate.representative_is_shiny = None
+                    self.store.save(candidate)
+                    self.state = candidate
+            except Exception:  # noqa: BLE001
+                pass
         QTimer.singleShot(0, self.run_setup_if_needed)
         self._apply_theme()
 

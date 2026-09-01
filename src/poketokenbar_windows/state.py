@@ -848,6 +848,27 @@ def evolution_target(state: GameState) -> int | None:
     return mon.path_ids[mon.stage_index + 1]
 
 
+def catch_index_for(state: GameState, member: Any) -> int:
+    """Pokedex index of a party member, or -1 when it has no entry.
+
+    Favourites live on the Pokedex record, so a Pokemon keeps its star whether
+    it is in the party or resting at the Ranch.
+    """
+    if member is None:
+        return -1
+    path = tuple(member.path_ids or [])
+    shiny = bool(member.is_shiny)
+    current = getattr(member, "current_id", None) or int(member.base_id)
+    # Match on the CURRENT species, not base_id: a Pokedex entry is updated to
+    # the evolved species as it grows, so base ids drift apart from each other.
+    for index, catch in enumerate(state.catches or []):
+        if tuple(catch.path_ids or []) != path or bool(catch.is_shiny) != shiny:
+            continue
+        if int(catch.species_id) == int(current) or int(catch.base_id) == int(member.base_id):
+            return index
+    return -1
+
+
 def set_favourite(state: GameState, catch_index: int, favourite: bool = True) -> bool:
     """Star or unstar a Pokedex entry. Favourites are safe from trading."""
     catches = state.catches or []

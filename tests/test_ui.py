@@ -594,34 +594,22 @@ class UITests(unittest.TestCase):
         self.assertEqual(window.representative_combo.count(), 4)
         self.assertEqual(window.dex_page_label.text(), "Page 1 / 1")
 
-    def test_follow_current_dropdown_emits_the_automatic_selection(self):
+    def test_the_desktop_follows_the_main_pokemon(self):
+        """The representative picker was removed - the main IS the companion."""
         state = GameState(
             mon=MonState(1, [1, 2, 3], 1, 10, "common", False, "Hardy"),
             catches=[
                 CatchRecord(2, 1, [1, 2, 3], "common", False, "Hardy", "2026-08-30T10:00:00")
             ],
-            representative_species_id=1,
-            representative_is_shiny=False,
         )
         window = self._window(state)
         window._render_collection()
-        selections = []
-        window.representative_changed.connect(selections.append)
-        self.assertGreater(window.representative_combo.currentIndex(), 0)
-
-        window.representative_combo.setCurrentIndex(0)
-
-        self.assertEqual(selections, [None])
-        species_index = next(
-            index
-            for index in range(1, window.representative_combo.count())
-            if window._representative_selection_data(
-                window.representative_combo.itemData(index)
-            )
-            == (2, False)
+        self.assertFalse(
+            window.representative_combo.isVisible(),
+            "the representative picker should no longer be offered",
         )
-        window.representative_combo.setCurrentIndex(species_index)
-        self.assertEqual(selections, [None, (2, False)])
+        self.assertIsNone(state.representative_species_id)
+
 
     def test_tray_tooltip_respects_visibility_preferences(self):
         snapshot = UsageSnapshot(
