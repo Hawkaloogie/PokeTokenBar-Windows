@@ -97,7 +97,10 @@ class UITests(unittest.TestCase):
         window.render(RefreshResult(one, {}, {}, state, [], None, "Pokemon Egg"))
         self.assertEqual(window.providers_tabs.count(), 1)
         self.assertFalse(window.providers_tabs.tabBar().isVisible())
-        self.assertLess(window.providers_tabs.maximumHeight(), window.limits_list.minimumHeight())
+        # The panel may now expand into spare window space, so the guard is on
+        # the height it actually claims: a single provider must still leave the
+        # limits list its full minimum rather than crowding it out.
+        self.assertLess(window.providers_tabs.minimumHeight(), window.limits_list.minimumHeight())
 
         two = UsageSnapshot(providers={
             "codex": ProviderUsage("codex", today_tokens=10),

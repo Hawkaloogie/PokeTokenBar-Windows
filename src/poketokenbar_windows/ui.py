@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QSizePolicy,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -783,8 +784,10 @@ class MainWindow(QMainWindow):
         self.providers_list = QListWidget()
         self.providers_tabs.addTab(self.providers_list, "Summary")
         self.providers_tabs.tabBar().hide()
-        self.providers_tabs.setMaximumHeight(130)
-        layout.addWidget(self.providers_tabs)
+        self.providers_tabs.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+        )
+        layout.addWidget(self.providers_tabs, 1)
 
         limits_label = QLabel("Official limits")
         lf = limits_label.font(); lf.setBold(True); limits_label.setFont(lf)
@@ -1538,9 +1541,15 @@ class MainWindow(QMainWindow):
         rows = max((widget.count() for widget in lists), default=1)
         row_height = max(22, self.providers_list.fontMetrics().height() + 8)
         tabs_height = self.providers_tabs.tabBar().sizeHint().height() if self.providers_tabs.tabBar().isVisible() else 0
-        height = min(150, max(42, min(rows, 4) * row_height + tabs_height + 10))
+        content = rows * row_height + tabs_height + 10
+        # Show every provider row rather than clamping at four, but never claim
+        # more than half the window so the limits list underneath keeps space.
+        ceiling = max(150, int(self.height() * 0.5))
+        height = max(42, min(content, ceiling))
         self.providers_tabs.setMinimumHeight(height)
-        self.providers_tabs.setMaximumHeight(height)
+        # Leave headroom above the fitted height so the layout can hand the
+        # panel any space the window has spare instead of stranding it.
+        self.providers_tabs.setMaximumHeight(max(height, ceiling))
 
     def _limit_widget(self, provider: str, window) -> QWidget:
         widget = QWidget()
