@@ -144,6 +144,7 @@ from .pokemon import (
     is_pace_downgrade,
     item_price,
     normalize_generation,
+    trade_reroll_price,
     normalize_pace,
     starters_for,
     starters_of_generation,
@@ -164,8 +165,14 @@ from .state import (
     clear_party_slot,
     confirm_evolution,
     evolution_target,
+    accept_trade,
+    can_reroll_trades,
     party_members,
+    refresh_trades,
     representative_subject,
+    reroll_trades,
+    set_favourite,
+    trade_candidates,
     reset_game_state,
     set_pace,
     start_with_species,
@@ -831,6 +838,9 @@ class MainWindow(QMainWindow):
     party_swap_requested = Signal(int)
     party_clear_requested = Signal(int)
     party_assign_requested = Signal(int, object)
+    trade_accept_requested = Signal(int, int)
+    trade_reroll_requested = Signal()
+    favourite_toggled = Signal(int, bool)
     reset_requested = Signal()
     pace_changed = Signal(object)
     pet_party_changed = Signal(bool)
@@ -1012,6 +1022,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(representative_row)
         inner = QTabWidget()
         inner.addTab(self._wrap_scroll(self._build_party_page()), "Party")
+        inner.addTab(self._wrap_scroll(self._build_trades_page()), "Trades")
         inner.addTab(self._wrap_scroll(self._build_dex_page()), "Pokédex")
         inner.addTab(self._wrap_scroll(self._build_catch_page()), "Catch log")
         layout.addWidget(inner)
@@ -1180,6 +1191,122 @@ class MainWindow(QMainWindow):
             f"{member.rarity.title()} · {member.nature}"
         )
         return label
+
+    def _build_trades_page(self) -> QWidget:
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        blurb = QLabel(
+            "Trades are paid for with a Pokemon, never tokens. An offer only "
+            "accepts something of matching value, and raising a Pokemon doubles "
+            "what it is worth - so a fully evolved companion trades far better "
+            "than a freshly hatched one. Favourites are never accepted."
+        )
+        blurb.setWordWrap(True)
+        blurb.setStyleSheet("color: palette(mid);")
+        layout.addWidget(blurb)
+
+        header = QHBoxLayout()
+        self.trades_status = QLabel("")
+        self.trades_status.setStyleSheet("color: palette(mid);")
+        header.addWidget(self.trades_status)
+        header.addStretch(1)
+        self.trade_reroll_button = QPushButton("Reroll offers")
+        self.trade_reroll_button.clicked.connect(self.trade_reroll_requested.emit)
+        header.addWidget(self.trade_reroll_button)
+        layout.addLayout(header)
+
+        self.trades_list = QVBoxLayout()
+        self.trades_list.setSpacing(10)
+        layout.addLayout(self.trades_list)
+        self.trades_empty = QLabel("No offers right now - they arrive with your next limit reset.")
+        self.trades_empty.setWordWrap(True)
+        layout.addWidget(self.trades_empty)
+        layout.addStretch(1)
+        return root
+
+    def _render_trades(self) -> None:
+        _clear_layout(self.trades_list)
+        offers = self.state.trade_offers or []
+        self.trades_empty.setVisible(not offers)
+
+        allowed, reason = can_reroll_trades(self.state)
+        price = trade_reroll_price(self.state.pace)
+        self.trade_reroll_button.setEnabled(allowed)
+        self.trade_reroll_button.setText(f"Reroll offers - {compact_tokens(price)}")
+        self.trade_reroll_button.setToolTip(
+            reason or "One reroll per limit window; a new window restores it"
+        )
+        self.trades_status.setText(
+            "Offers refresh when your 5-hour limit resets."
+            if allowed else (reason or "")
+        )
+
+        for index, offer in enumerate(offers):
+            card = QFrame()
+            card.setFrameShape(QFrame.Shape.StyledPanel)
+            card.setStyleSheet(
+                "QFrame { border: 1px solid palette(mid); border-radius: 12px; }"
+            )
+            row = QHBoxLayout(card)
+
+            sprite = QLabel()
+            sprite.setStyleSheet("border: none;")
+            sprite.setFixedSize(64, 64)
+            sprite.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            path = self.api.sprite_path(offer.gives_id, animated=False)
+            pix = _sprite_pixmap(path, 60)
+            sprite.setPixmap(pix if not pix.isNull() else _pokeball_pixmap(60))
+            row.addWidget(sprite)
+
+            text = QVBoxLayout()
+            name = QLabel(self.api.localized_name(offer.gives_id, self.state.language))
+            nf = name.font(); nf.setBold(True); name.setFont(nf)
+            name.setStyleSheet("border: none;")
+            text.addWidget(name)
+            detail = QLabel(
+                f"{offer.gives_rarity.title()} - {generation_label(offer.gives_id)}"
+            )
+            detail.setStyleSheet("color: palette(mid); border: none;")
+            text.addWidget(detail)
+            wants = QLabel(f"Wants: {offer.describe_wanted()}")
+            wants.setStyleSheet("border: none;")
+            text.addWidget(wants)
+            row.addLayout(text, 1)
+
+            picker = _no_wheel(QComboBox())
+            picker.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            picker.setMinimumContentsLength(12)
+            candidates = trade_candidates(self.state, index)
+            for position in candidates:
+                entry = self.state.catches[position]
+                prefix = "✨ " if entry.is_shiny else ""
+                picker.addItem(
+                    f"{prefix}#{entry.species_id:03d} "
+                    f"{self.api.localized_name(entry.species_id, self.state.language)}",
+                    position,
+                )
+            accept = QPushButton("Trade")
+            if candidates:
+                picker.setToolTip("Choose which Pokemon to hand over")
+                accept.clicked.connect(
+                    lambda _checked=False, offer_index=index, combo=picker: (
+                        self.trade_accept_requested.emit(offer_index, int(combo.currentData()))
+                        if combo.currentData() is not None else None
+                    )
+                )
+            else:
+                picker.addItem("Nothing you own qualifies", None)
+                picker.setEnabled(False)
+                accept.setEnabled(False)
+                accept.setToolTip(f"You need {offer.describe_wanted()}")
+            side = QVBoxLayout()
+            side.addWidget(picker)
+            side.addWidget(accept)
+            row.addLayout(side)
+
+            self.trades_list.addWidget(card)
 
     def _build_dex_page(self) -> QWidget:
         page = QWidget()
@@ -2025,6 +2152,8 @@ class MainWindow(QMainWindow):
         self._render_bag_shop()
         self._render_collection()
         self._render_party()
+        self._render_trades()
+        self._render_trades()
 
     def _select_pace(self, pace: str) -> None:
         combo = getattr(self, "pace_combo", None)
@@ -2663,6 +2792,32 @@ class MainWindow(QMainWindow):
             header.addWidget(badge)
         if catch.is_shiny:
             header.addWidget(QLabel("✨"))
+        star = QPushButton("★" if catch.is_favourite else "☆")
+        star.setCheckable(True)
+        star.setChecked(bool(catch.is_favourite))
+        star.setFixedWidth(34)
+        star.setToolTip(
+            "Favourited - can never be traded away"
+            if catch.is_favourite else
+            "Favourite this Pokemon so it can never be traded away"
+        )
+        star.setStyleSheet(
+            "QPushButton { border: none; font-size: 18px; color: #9aa4b2; } "
+            "QPushButton:checked { color: #f59e0b; }"
+        )
+        try:
+            catch_index = self.state.catches.index(catch)
+        except ValueError:
+            catch_index = -1
+        if catch_index >= 0:
+            star.clicked.connect(
+                lambda checked=False, index=catch_index: self.favourite_toggled.emit(
+                    index, bool(checked)
+                )
+            )
+        else:
+            star.setEnabled(False)
+        header.addWidget(star)
         layout.addLayout(header)
 
         summary = QLabel(
@@ -2846,6 +3001,9 @@ class TrayController(QObject):
         self.window.party_swap_requested.connect(self._swap_main)
         self.window.party_clear_requested.connect(self._clear_party_slot)
         self.window.party_assign_requested.connect(self._assign_party_slot)
+        self.window.trade_accept_requested.connect(self._accept_trade)
+        self.window.trade_reroll_requested.connect(self._reroll_trades)
+        self.window.favourite_toggled.connect(self._toggle_favourite)
         self.window.reset_requested.connect(self._reset_app)
         self.window.pace_changed.connect(self._set_pace)
         self.window.pet_party_changed.connect(self._set_party_visible)
@@ -3122,6 +3280,82 @@ class TrayController(QObject):
         if preview is not None:
             self.last_result = preview
             self._update_companion_surfaces(preview)
+
+    def _trade_window_key(self) -> str:
+        """Identity of the current 5-hour block, so offers hold until it resets."""
+        result = self.last_result
+        if result is not None:
+            for limits in (result.limits or {}).values():
+                for window in getattr(limits, "windows", []):
+                    if "5-hour" in str(window.label).lower() and window.resets_at:
+                        return window.resets_at.isoformat()
+        # No reset known: fall back to a coarse bucket so offers still rotate.
+        now = datetime.now().astimezone()
+        return f"{now:%Y-%m-%d}|{now.hour // 5}"
+
+    def _sync_trades(self) -> None:
+        """Regenerate offers when the usage window has rolled over."""
+        try:
+            with self.state_lock:
+                candidate = copy.deepcopy(self.state)
+                if not refresh_trades(candidate, self.api, self._trade_window_key()):
+                    return
+                self.store.save(candidate)
+                self.state = candidate
+        except Exception:  # noqa: BLE001
+            return
+        self.window.set_state(self.state)
+
+    def _accept_trade(self, offer_index: int, catch_index: int) -> None:
+        message = ""
+        try:
+            with self.state_lock:
+                candidate = copy.deepcopy(self.state)
+                ok, message = accept_trade(candidate, int(offer_index), int(catch_index))
+                if not ok:
+                    QMessageBox.information(self.window, "Trade", message)
+                    return
+                self.store.save(candidate)
+                self.state = candidate
+        except Exception:  # noqa: BLE001
+            QMessageBox.warning(
+                self.window, "PokeTokenBar", "The trade could not be saved."
+            )
+            return
+        self.window.set_state(self.state)
+        self.window.celebrate("Trade complete!")
+        self.refresh()
+
+    def _reroll_trades(self) -> None:
+        try:
+            with self.state_lock:
+                candidate = copy.deepcopy(self.state)
+                ok, message = reroll_trades(
+                    candidate, self.api, self._trade_window_key()
+                )
+                if not ok:
+                    QMessageBox.information(self.window, "Trades", message)
+                    return
+                self.store.save(candidate)
+                self.state = candidate
+        except Exception:  # noqa: BLE001
+            QMessageBox.warning(
+                self.window, "PokeTokenBar", "The reroll could not be saved."
+            )
+            return
+        self.window.set_state(self.state)
+
+    def _toggle_favourite(self, catch_index: int, favourite: bool) -> None:
+        try:
+            with self.state_lock:
+                candidate = copy.deepcopy(self.state)
+                if not set_favourite(candidate, int(catch_index), bool(favourite)):
+                    return
+                self.store.save(candidate)
+                self.state = candidate
+        except Exception:  # noqa: BLE001
+            return
+        self.window.set_state(self.state)
 
     def _swap_main(self, slot: int) -> None:
         self._mutate_party(
@@ -3534,6 +3768,7 @@ class TrayController(QObject):
         self.last_result = result
         self.window.render(result)
         self._update_companion_surfaces(result)
+        self._sync_trades()
         if self.window_open_pending:
             self.window_open_pending = False
             self._present_window(animate_reveal=not self.initial_reveal_played)
