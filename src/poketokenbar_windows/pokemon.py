@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import random
 import re
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -314,6 +316,14 @@ class PokeAPIClient:
         return self._json(f"https://pokeapi.co/api/v2/pokemon-species/{species_id}", f"species-{species_id}")
 
     def evolution_chain(self, chain_url: str) -> dict[str, Any]:
+        # The URL is data, not a trusted literal: it comes straight out of a
+        # PokeAPI JSON response (live or cached on disk), so a compromised
+        # API, a TLS-intercepting middlebox, or a tampered cache file could
+        # hand back a file:// path or an arbitrary host. Refuse anything that
+        # is not an HTTPS request to the real API before ever calling urlopen.
+        parsed = urllib.parse.urlparse(chain_url if isinstance(chain_url, str) else "")
+        if parsed.scheme != "https" or parsed.hostname != "pokeapi.co":
+            raise ValueError(f"Refusing to fetch evolution chain from untrusted URL: {chain_url!r}")
         match = re.search(r"/evolution-chain/(\d+)/?", chain_url)
         key = f"evolution-{match.group(1) if match else abs(hash(chain_url))}"
         return self._json(chain_url, key)
@@ -390,11 +400,34 @@ class PokeAPIClient:
         shiny_charm: bool = False,
         max_attempts: int = 1200,
         generation: int | None = None,
+        max_seconds: float = 45.0,
     ) -> HatchResult:
+        """Roll a hatch, retrying rejected candidates against live PokeAPI data.
+
+        Bounded by wall-clock time (`max_seconds`), not just attempt count.
+        `max_attempts` alone caps the worst case at roughly
+        `max_attempts * self.timeout` - about four hours at the defaults - if
+        every attempt happens to hit an unreachable host that hangs for the
+        full 12s timeout before failing. An elapsed-time deadline bounds that
+        worst case directly regardless of whether attempts fail slow
+        (timeouts) or fast (rejected candidates, connection refused), which a
+        consecutive-failure counter would not: a run of timeouts interleaved
+        with a few instant rejections could still reset a failure streak
+        while burning most of the deadline. On timeout the caller gets a
+        RuntimeError and is expected to leave the state it was mutating
+        unsaved, so the pending egg is retried on the next refresh rather
+        than lost.
+        """
         minimum_rank = RARITY_RANK.get(minimum_rarity or "common", 0)
         low, high = generation_bounds(normalize_generation(generation))
         last_error: Exception | None = None
+        deadline = time.monotonic() + max(0.0, max_seconds)
         for _ in range(max_attempts):
+            if time.monotonic() >= deadline:
+                last_error = last_error or TimeoutError(
+                    f"Hatch search exceeded its {max_seconds:.0f}s deadline"
+                )
+                break
             species_id = random.randint(low, high)
             if species_id == DITTO_SPECIES_ID:
                 continue

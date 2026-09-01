@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import random
+import time
+import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -40,8 +42,13 @@ from .windows import state_dir
 
 # 3 adds `party` and `generation_filter`. An OLDER build loads a v3 file
 # without error but its save() re-serializes only the fields it knows about,
-# silently dropping both on its next autosave, so the loader keeps a one-time
-# backup when it sees a newer file than it understands.
+# silently dropping both on its next autosave. StateStore.load() guards
+# against the mirror case - a file written by a NEWER build than this one
+# understands - by copying the original aside to
+# state-corrupt-<timestamp>.json before anything can overwrite it; see
+# StateStore._backup_unusable_save. The same backup fires for a save that
+# fails to parse or coerce at all, so a single malformed field never silently
+# discards the whole file.
 STATE_VERSION = 3
 
 # One main plus five benched companions, matching a six-slot game party.
@@ -386,11 +393,34 @@ class StateStore:
 
     def load(self) -> GameState:
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            text = self.path.read_text(encoding="utf-8")
+        except OSError:
+            # Nothing on disk to lose - a fresh game is the correct fallback,
+            # and there is nothing to back up.
+            return GameState()
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError:
+            self._backup_unusable_save(text, reason="unparseable-json")
             return GameState()
         if not isinstance(raw, dict):
+            self._backup_unusable_save(text, reason="not-an-object")
             return GameState()
+
+        raw_version = raw.get("version")
+        if (
+            isinstance(raw_version, int)
+            and not isinstance(raw_version, bool)  # bool is an int subclass
+            and raw_version > STATE_VERSION
+        ):
+            # A build newer than this one wrote fields this build does not
+            # know about. Loading it anyway and letting the next autosave
+            # write it back through THIS build's `asdict(state)` would
+            # silently drop them for good (the exact failure the comment
+            # above STATE_VERSION warns about) - so the original is
+            # preserved once, before anything has a chance to overwrite it.
+            self._backup_unusable_save(text, reason="newer-version")
+
         try:
             mon = _coerce_mon(raw.get("mon"))
             catch_source = raw.get("catches")
@@ -453,14 +483,74 @@ class StateStore:
             normalize_representative(state)
             return state
         except (TypeError, ValueError, AttributeError):
+            # One malformed field used to discard the WHOLE save - and the
+            # very next autosave (five minutes away, or on the next window
+            # show) would overwrite it for good with no way back. Preserve
+            # the original before returning the fresh game that replaces it.
+            self._backup_unusable_save(text, reason="unparseable-field")
             return GameState()
 
+    def _backup_unusable_save(self, original_text: str, *, reason: str) -> None:
+        """Copy a save this build could not use aside before it gets lost.
+
+        Only the explicit Import feature (ui.py's _import_state) made a
+        backup before this; a hand-edited typo or a newer build's file had no
+        recovery path at all. `reason` is not read back by anything - it is
+        there purely so a human looking at the directory listing (or the
+        `.vault-meta`/`BUILD-LOG.md` note that references this) can tell load
+        failures apart from a genuinely newer save format without opening
+        each file.
+        """
+        if not original_text.strip():
+            return
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        backup = self.path.with_name(f"state-corrupt-{timestamp}.json")
+        suffix = 0
+        while backup.exists():
+            suffix += 1
+            backup = self.path.with_name(f"state-corrupt-{timestamp}-{suffix}.json")
+        try:
+            backup.write_text(original_text, encoding="utf-8")
+        except OSError:
+            pass
+
     def save(self, state: GameState) -> None:
-        tmp = self.path.with_suffix(".tmp")
         payload = asdict(state)
         payload["trade_offers"] = [offer_to_dict(o) for o in (state.trade_offers or [])]
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(self.path)
+        # A unique name per call, not a shared fixed "state.tmp": two saves
+        # racing (e.g. quit() firing while a background refresh is mid-save)
+        # used to both write_text() the SAME temp path, so one could truncate
+        # or interleave with the other before either tmp.replace() landed,
+        # producing invalid JSON that the next load() would discard as a
+        # corrupt save. Each writer now gets its own file, so the two
+        # concurrent renames are independent and the loser's write is simply
+        # never referenced rather than half-written.
+        tmp = self.path.with_name(f"{self.path.stem}-{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            # Unlike POSIX rename(), Windows' MoveFileEx is not guaranteed
+            # atomic with respect to ANOTHER concurrent rename onto the same
+            # destination - two threads each replacing self.path with their
+            # own (already-unique) tmp file at the same instant can make one
+            # of them transiently fail with PermissionError/WinError 5,
+            # discovered empirically under this fix's own concurrency test.
+            # The source file is untouched between attempts, so retrying is
+            # safe: it can only succeed with THIS call's own complete write,
+            # never a partial one.
+            last_error: OSError | None = None
+            for _ in range(20):
+                try:
+                    tmp.replace(self.path)
+                    last_error = None
+                    break
+                except PermissionError as exc:
+                    last_error = exc
+                    time.sleep(0.01)
+            if last_error is not None:
+                raise last_error
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 def usage_delta(

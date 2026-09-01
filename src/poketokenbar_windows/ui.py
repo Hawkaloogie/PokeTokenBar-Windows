@@ -214,6 +214,19 @@ class RefreshResult:
     reveal_ball_path: Path | None = None
 
 
+# How many times a state-committing action will redo its work against a
+# fresher `self.state` before giving up. Every locked state mutation below
+# builds its candidate from a snapshot taken WITHOUT holding `state_lock` -
+# including any PokeAPI network calls the mutation makes - and only takes the
+# lock for the fast, network-free commit (save + assign). If another writer
+# committed in between (detected by identity: `self.state is base`), the
+# whole thing - network calls included - is redone against the new state
+# rather than blindly overwriting it. Contention is rare (one UI action at a
+# time, one refresh worker at a time), so a handful of retries is a generous
+# ceiling, not a tuned budget.
+_STATE_COMMIT_MAX_ATTEMPTS = 5
+
+
 def application_settings() -> QSettings:
     """Use an isolated INI backend for QA while preserving production registry settings."""
     if os.environ.get("PTB_STATE_DIR", "").strip():
@@ -3536,8 +3549,20 @@ class TrayController(QObject):
             choice_start = dialog.chosen_start()
 
         try:
-            with self.state_lock:
-                candidate = copy.deepcopy(self.state)
+            attempt = 0
+            while True:
+                attempt += 1
+                # `base` is read without the lock and PokeAPI is called with
+                # no lock held below - hatching a starter is a network round
+                # trip (species + evolution-chain lookups), and this runs on
+                # the GUI thread during first-run setup, so holding the lock
+                # here used to freeze every other state-locked action for as
+                # long as that fetch took. The lock is only reacquired to
+                # commit, and if something else committed in the meantime
+                # (`self.state is not base`) the whole attempt - including
+                # the network calls - is redone against the fresher state.
+                base = self.state
+                candidate = copy.deepcopy(base)
                 set_generation_filter(candidate, choice_generation)
                 if choice_start == SetupDialog.RANDOM:
                     hatched = self.api.hatch(generation=candidate.generation_filter)
@@ -3545,8 +3570,13 @@ class TrayController(QObject):
                 elif choice_start is not None:
                     start_with_species(candidate, int(choice_start), self.api)
                 candidate.setup_completed = True
-                self.store.save(candidate)
-                self.state = candidate
+                with self.state_lock:
+                    if self.state is base:
+                        self.store.save(candidate)
+                        self.state = candidate
+                        break
+                if attempt >= _STATE_COMMIT_MAX_ATTEMPTS:
+                    raise RuntimeError("Could not save setup: state kept changing")
         except Exception:  # noqa: BLE001
             QMessageBox.warning(
                 self.window,
@@ -3624,14 +3654,31 @@ class TrayController(QObject):
         return f"{now:%Y-%m-%d}|{now.hour // 5}"
 
     def _sync_trades(self) -> None:
-        """Regenerate offers when the usage window has rolled over."""
+        """Regenerate offers when the usage window has rolled over.
+
+        `refresh_trades` fetches from PokeAPI (`api.hatch_species` per
+        candidate offer) whenever the window has rolled over, so it must not
+        run with `state_lock` held - this is on the GUI thread. The candidate
+        is built and populated from a snapshot taken without the lock; the
+        lock is only reacquired to commit, and a conflicting concurrent
+        commit (checked by identity) redoes the whole attempt, network calls
+        included, against the fresher state rather than clobbering it.
+        """
         try:
-            with self.state_lock:
-                candidate = copy.deepcopy(self.state)
+            attempt = 0
+            while True:
+                attempt += 1
+                base = self.state
+                candidate = copy.deepcopy(base)
                 if not refresh_trades(candidate, self.api, self._trade_window_key()):
                     return
-                self.store.save(candidate)
-                self.state = candidate
+                with self.state_lock:
+                    if self.state is base:
+                        self.store.save(candidate)
+                        self.state = candidate
+                        break
+                if attempt >= _STATE_COMMIT_MAX_ATTEMPTS:
+                    return
         except Exception:  # noqa: BLE001
             return
         self.window.set_state(self.state)
@@ -3657,17 +3704,33 @@ class TrayController(QObject):
         self.refresh()
 
     def _reroll_trades(self) -> None:
+        """Spend the reroll and fetch fresh offers.
+
+        `reroll_trades` calls PokeAPI the same way `refresh_trades` does, so
+        the same no-network-under-the-lock treatment applies: build and
+        resolve the candidate from an unlocked snapshot, and only take the
+        lock to commit, redoing the attempt against a fresher state on
+        conflict.
+        """
         try:
-            with self.state_lock:
-                candidate = copy.deepcopy(self.state)
+            attempt = 0
+            while True:
+                attempt += 1
+                base = self.state
+                candidate = copy.deepcopy(base)
                 ok, message = reroll_trades(
                     candidate, self.api, self._trade_window_key()
                 )
                 if not ok:
                     QMessageBox.information(self.window, "Trades", message)
                     return
-                self.store.save(candidate)
-                self.state = candidate
+                with self.state_lock:
+                    if self.state is base:
+                        self.store.save(candidate)
+                        self.state = candidate
+                        break
+                if attempt >= _STATE_COMMIT_MAX_ATTEMPTS:
+                    raise RuntimeError("Could not save reroll: state kept changing")
         except Exception:  # noqa: BLE001
             QMessageBox.warning(
                 self.window, "PokeTokenBar", "The reroll could not be saved."
@@ -3839,14 +3902,33 @@ class TrayController(QObject):
         self.floating_pet.play_evolution(before, after)
 
     def _finish_evolution(self) -> None:
+        """Commit an evolution the player just watched play out.
+
+        `confirm_evolution` can spend banked tokens through `apply_usage`,
+        which can in turn call `PokeAPIClient.hatch` (graduating straight
+        into a fresh egg's hatch) - a PokeAPI round trip on the GUI thread.
+        Resolved from an unlocked snapshot for the same reason as the other
+        handlers here; the lock only guards the commit, and a conflicting
+        concurrent commit redoes the attempt against the fresher state.
+        """
         if not self.state.pending_evolution:
             return
         try:
-            with self.state_lock:
-                candidate = copy.deepcopy(self.state)
+            attempt = 0
+            while True:
+                attempt += 1
+                base = self.state
+                if not base.pending_evolution:
+                    return
+                candidate = copy.deepcopy(base)
                 events = confirm_evolution(candidate, self.api)
-                self.store.save(candidate)
-                self.state = candidate
+                with self.state_lock:
+                    if self.state is base:
+                        self.store.save(candidate)
+                        self.state = candidate
+                        break
+                if attempt >= _STATE_COMMIT_MAX_ATTEMPTS:
+                    raise RuntimeError("Could not save evolution: state kept changing")
         except Exception:  # noqa: BLE001
             QMessageBox.warning(
                 self.window, "PokeTokenBar", "The evolution could not be saved."
@@ -3979,8 +4061,15 @@ class TrayController(QObject):
         if not filename:
             return
         try:
-            self.store.save(self.state)
-            Path(filename).write_text(self.store.path.read_text(encoding="utf-8"), encoding="utf-8")
+            # Locked so this can never race a background refresh's own
+            # `store.save` - both used to write the SAME "state.tmp" with no
+            # lock held here at all (finding 4); StateStore.save() now also
+            # gives every call its own temp filename as a second, independent
+            # guard against that class of corruption.
+            with self.state_lock:
+                self.store.save(self.state)
+                text = self.store.path.read_text(encoding="utf-8")
+            Path(filename).write_text(text, encoding="utf-8")
             self.window.statusBar().showMessage("Save exported", 5000)
         except OSError:
             QMessageBox.warning(self.window, "Export save", "The selected file could not be written.")
@@ -3990,6 +4079,20 @@ class TrayController(QObject):
             self.window, "Import PokeTokenBar save", "", "JSON files (*.json)"
         )
         if not filename:
+            return
+        if self.refresh_running:
+            # A refresh worker may be mid-flight and about to commit a
+            # deepcopy of the PRE-import state; letting the import land now
+            # risks that commit silently overwriting it moments later (the
+            # "previous save backed up" message would still show, so the
+            # user would believe the import worked - finding 3). Refuse
+            # rather than race it; the user can retry once it settles.
+            QMessageBox.information(
+                self.window,
+                "Import save",
+                "PokeTokenBar is updating your usage right now. "
+                "Wait a moment for it to finish, then import again.",
+            )
             return
         try:
             raw = json.loads(Path(filename).read_text(encoding="utf-8"))
@@ -4001,19 +4104,31 @@ class TrayController(QObject):
                 raise TypeError
             if not isinstance(raw.get("inventory", {}), dict):
                 raise TypeError
-            backup = self.store.path.with_name(
-                f"state-before-import-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.json"
-            )
-            if self.store.path.exists():
-                backup.write_text(self.store.path.read_text(encoding="utf-8"), encoding="utf-8")
-            imported_path = self.store.path.with_suffix(".import.tmp")
-            imported_path.write_text(json.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8")
-            imported_path.replace(self.store.path)
-            imported = self.store.load()
-            self.state = imported
+            with self.state_lock:
+                if self.refresh_running:
+                    # Re-checked under the lock: a refresh could have started
+                    # between the check above and acquiring it.
+                    raise RuntimeError("refresh in flight")
+                backup = self.store.path.with_name(
+                    f"state-before-import-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.json"
+                )
+                if self.store.path.exists():
+                    backup.write_text(self.store.path.read_text(encoding="utf-8"), encoding="utf-8")
+                imported_path = self.store.path.with_suffix(".import.tmp")
+                imported_path.write_text(json.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8")
+                imported_path.replace(self.store.path)
+                imported = self.store.load()
+                self.state = imported
             self.window.set_state(imported)
             self.refresh()
             self.window.statusBar().showMessage("Save imported; previous save backed up", 7000)
+        except RuntimeError:
+            QMessageBox.information(
+                self.window,
+                "Import save",
+                "PokeTokenBar is updating your usage right now. "
+                "Wait a moment for it to finish, then import again.",
+            )
         except (OSError, json.JSONDecodeError, TypeError, ValueError):
             QMessageBox.warning(self.window, "Import save", "This is not a valid PokeTokenBar save file.")
 
@@ -4048,26 +4163,50 @@ class TrayController(QObject):
         self.executor.submit(self._refresh_worker)
 
     def _refresh_worker(self) -> None:
+        """Background-thread refresh: pull usage/limits, apply it, resolve art.
+
+        This is the single biggest offender for finding 1: a cold cache means
+        `apply_usage` can call `PokeAPIClient.hatch` (poll the species and
+        evolution-chain endpoints, potentially many times against a 12s
+        timeout each) and `_prefetch_collection` fetches a species name and a
+        sprite for every Pokedex entry - dozens of PokeAPI round trips. All of
+        that used to run inside `state_lock`, so any UI-thread action that
+        also needed the lock (buy an item, open the shop, accept a trade)
+        blocked for the whole refresh and the window read "Not Responding".
+        Every `self.api.*` / `apply_usage` call below now runs against a
+        candidate built from a snapshot taken WITHOUT the lock; the lock is
+        only reacquired to commit (save + assign), and a conflicting
+        concurrent commit (checked by identity) redoes the whole attempt -
+        network calls included - against the fresher state.
+        """
         try:
             snapshot, errors = scan_all()
             limits = fetch_all_limits()
-            # Anthropic often omits the reset time. If the user has told us a
-            # real one they saw, roll the clock forward from that instead.
-            anchor = self.state.reset_anchor
-            if anchor:
-                limits = {
-                    key: apply_reset_anchor(value, anchor) if key == "claude" else value
-                    for key, value in limits.items()
-                }
             reveal_ball = self.api.item_sprite_path("poke-ball")
-            with self.state_lock:
-                candidate = copy.deepcopy(self.state)
+
+            attempt = 0
+            while True:
+                attempt += 1
+                base = self.state
+                candidate = copy.deepcopy(base)
+                # Anthropic often omits the reset time. If the user has told
+                # us a real one they saw, roll the clock forward from that
+                # instead. Read from `candidate` (this attempt's snapshot) so
+                # a concurrently-changed anchor is picked up on retry too.
+                anchor = candidate.reset_anchor
+                attempt_limits = (
+                    {
+                        key: apply_reset_anchor(value, anchor) if key == "claude" else value
+                        for key, value in limits.items()
+                    }
+                    if anchor else limits
+                )
                 delta = usage_delta(
                     candidate,
                     {provider: usage.today_tokens for provider, usage in snapshot.providers.items()},
                 )
                 events = apply_usage(candidate, delta, self.api) if delta else []
-                events.extend(apply_limit_rewards(candidate, limits))
+                events.extend(apply_limit_rewards(candidate, attempt_limits))
                 mon = candidate.mon
                 sprite = self.api.sprite_path(mon.current_id, shiny=mon.is_shiny) if mon else self.api.egg_sprite_path()
                 pet_subject = representative_subject(candidate)
@@ -4081,9 +4220,15 @@ class TrayController(QObject):
                     self.api.localized_name(pet_subject.species_id, candidate.language)
                     if pet_subject.species_id is not None else "Pokemon Egg"
                 )
-                self.store.save(candidate)
-                self.state = candidate
-                state = candidate
+                with self.state_lock:
+                    if self.state is base:
+                        self.store.save(candidate)
+                        self.state = candidate
+                        state = candidate
+                        limits = attempt_limits
+                        break
+                if attempt >= _STATE_COMMIT_MAX_ATTEMPTS:
+                    raise RuntimeError("Could not save refresh: state kept changing")
             self.bridge.refreshed.emit(RefreshResult(
                 snapshot=snapshot,
                 limits=limits,
@@ -4252,16 +4397,35 @@ class TrayController(QObject):
         *,
         refresh: bool = False,
     ) -> bool:
+        """Shared plumbing for shop/inventory actions (buy, use, buy an egg).
+
+        `operation` is not guaranteed network-free: using Rare Candy runs
+        `apply_usage`, which can call `PokeAPIClient.hatch` if it pushes the
+        egg over its threshold, and this is invoked synchronously from the
+        GUI thread's button handler. `operation` therefore runs against a
+        candidate built from an unlocked snapshot; the lock only guards the
+        commit, and a conflicting concurrent commit redoes `operation` -
+        network calls included - against the fresher state.
+        """
         try:
-            with self.state_lock:
-                candidate = copy.deepcopy(self.state)
+            attempt = 0
+            while True:
+                attempt += 1
+                base = self.state
+                candidate = copy.deepcopy(base)
                 outcome = operation(candidate)
                 ok = bool(outcome[0])
                 message = str(outcome[1])
                 events = outcome[2] if len(outcome) > 2 else []
-                if ok:
-                    self.store.save(candidate)
-                    self.state = candidate
+                if not ok:
+                    break
+                with self.state_lock:
+                    if self.state is base:
+                        self.store.save(candidate)
+                        self.state = candidate
+                        break
+                if attempt >= _STATE_COMMIT_MAX_ATTEMPTS:
+                    raise RuntimeError("Could not save: state kept changing")
         except Exception:  # noqa: BLE001
             QMessageBox.warning(self.window, "PokeTokenBar", "The action could not be completed. Your save was not changed.")
             return False
@@ -4320,7 +4484,19 @@ class TrayController(QObject):
             self.refresh()
 
     def quit(self) -> None:
-        self.store.save(self.state)
+        # Locked so this can never race a background refresh's own
+        # `store.save` mid-write (finding 4) - both used to call
+        # `self.store.save` with no lock held at all here, and shared one
+        # fixed "state.tmp" path, so two overlapping writers could truncate
+        # or interleave each other's write before either rename landed,
+        # producing invalid JSON that the next launch's `load()` would
+        # discard as unusable, silently resetting the whole game. The lock
+        # only guards this one call, not the executor shutdown below, so
+        # quitting still does not wait out an in-progress refresh's network
+        # calls - those now happen outside the lock (finding 1) and take a
+        # bounded but sometimes multi-second slice regardless.
+        with self.state_lock:
+            self.store.save(self.state)
         self.floating_pet.shutdown()
         self.tray.hide()
         self.executor.shutdown(wait=False, cancel_futures=True)
