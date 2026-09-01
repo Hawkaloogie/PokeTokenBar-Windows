@@ -99,6 +99,7 @@ def snap_pet_position(
     *,
     margin: int = 8,
     width: int | None = None,
+    height: int | None = None,
 ) -> tuple[int, int]:
     """Dock the pet to the bottom edge of a screen's work area.
 
@@ -111,6 +112,8 @@ def snap_pet_position(
     # The party row makes the window wider than the main sprite, so the
     # horizontal clamp must use the real window width or the bench overhangs.
     pet_width = pet_size if width is None else max(pet_size, int(width))
+    # A level strip under the sprite makes the window taller than the art.
+    pet_height = pet_size if height is None else max(pet_size, int(height))
     try:
         current_x = float(x)
     except (TypeError, ValueError):
@@ -119,10 +122,10 @@ def snap_pet_position(
         current_x = float(screen.x)
     snapped_x = _clamp_axis(current_x, screen.x, screen.width, pet_width, margin)
     snapped_y = _clamp_axis(
-        float(screen.bottom - margin - pet_size),
+        float(screen.bottom - margin - pet_height),
         screen.y,
         screen.height,
-        pet_size,
+        pet_height,
         margin,
     )
     return snapped_x, snapped_y
@@ -136,11 +139,14 @@ def recover_pet_position(
     *,
     margin: int = 8,
     width: int | None = None,
+    height: int | None = None,
 ) -> tuple[int, int]:
     """Clamp a pet fully into the nearest visible work area using logical Qt units."""
     pet_size = normalize_pet_size(size)
-    # Width can exceed the sprite box once a party row is drawn beside the main.
+    # Width can exceed the sprite box once a party row is drawn beside the main,
+    # and height can exceed it once a level strip sits underneath.
     pet_width = pet_size if width is None else max(pet_size, int(width))
+    pet_height = pet_size if height is None else max(pet_size, int(height))
     try:
         px, py = float(x), float(y)
     except (TypeError, ValueError):
@@ -151,7 +157,7 @@ def recover_pet_position(
         primary = screens[0]
         return (
             _clamp_axis(primary.right - pet_width - 24, primary.x, primary.width, pet_width, margin),
-            _clamp_axis(primary.bottom - pet_size - 24, primary.y, primary.height, pet_size, margin),
+            _clamp_axis(primary.bottom - pet_height - 24, primary.y, primary.height, pet_height, margin),
         )
     usable = [screen for screen in screens if screen.width > 0 and screen.height > 0]
     if not usable:
@@ -162,7 +168,7 @@ def recover_pet_position(
         target = min(usable, key=lambda screen: screen.distance_squared(px, py))
     return (
         _clamp_axis(px, target.x, target.width, pet_width, margin),
-        _clamp_axis(py, target.y, target.height, pet_size, margin),
+        _clamp_axis(py, target.y, target.height, pet_height, margin),
     )
 
 

@@ -50,6 +50,12 @@ PET_SNAP_KEY = "floating_pet/snap_taskbar"
 # main stays the obvious focal point of the row.
 BENCH_SCALE = 0.5
 BENCH_GAP_SCALE = 0.06
+
+# The level sits in a strip UNDER the sprite rather than on top of it, so the
+# artwork is never covered. Half opacity keeps it glanceable without competing
+# with the Pokemon for attention.
+LEVEL_STRIP_SCALE = 0.18
+LEVEL_OPACITY = 0.5
 PET_ALERTS_KEY = "floating_pet/alerts_enabled"
 PET_ALERT_MEMORY_KEY = "floating_pet/alert_memory"
 MENU_OPEN_LABEL = "Open PokeTokenBar"
@@ -185,37 +191,6 @@ def _white_silhouette(pixmap: QPixmap) -> QPixmap:
     return canvas
 
 
-def _draw_level_badge(pixmap: QPixmap, text: str) -> QPixmap:
-    """Stamp a small level badge into the sprite's bottom-right corner."""
-    if pixmap.isNull() or not text:
-        return pixmap
-    canvas = QPixmap(pixmap)
-    painter = QPainter(canvas)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    font = painter.font()
-    size = max(7, round(canvas.height() * 0.13))
-    font.setPointSize(size)
-    font.setBold(True)
-    painter.setFont(font)
-    metrics = painter.fontMetrics()
-    pad_x = max(3, round(size * 0.5))
-    pad_y = max(1, round(size * 0.22))
-    width = metrics.horizontalAdvance(text) + pad_x * 2
-    height = metrics.height() + pad_y * 2
-    x = canvas.width() - width - 2
-    y = canvas.height() - height - 2
-    radius = height / 2.0
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(17, 24, 39, 216))
-    painter.drawRoundedRect(x, y, width, height, radius, radius)
-    painter.setPen(QPen(QColor("#f9fafb")))
-    painter.drawText(
-        x, y, width, height, Qt.AlignmentFlag.AlignCenter, text
-    )
-    painter.end()
-    return canvas
-
-
 class FloatingPetWindow(QWidget):
     clicked = Signal()
     hide_requested = Signal()
@@ -261,6 +236,12 @@ class FloatingPetWindow(QWidget):
         self.bench_labels: list[QLabel] = []
         self.bench_paths: list[Path | None] = []
         self.level_text: str = ""
+        self.level_label = QLabel(self)
+        self.level_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.level_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.level_label.hide()
         self.evolution_timer = QTimer(self)
         self.evolution_timer.setSingleShot(True)
         self.evolution_timer.timeout.connect(self._advance_evolution)
@@ -294,16 +275,33 @@ class FloatingPetWindow(QWidget):
         gap = max(2, round(self.pet_size * BENCH_GAP_SCALE))
         small = self.bench_size()
         width = self.pet_size + (len(filled) * (small + gap) if filled else 0)
-        self.setFixedSize(width, self.pet_size)
-        self.label.setGeometry(0, 0, self.pet_size, self.pet_size)
+        area = self.sprite_area()
+        self.setFixedSize(width, area + self.level_strip_height())
+        self.label.setGeometry(0, 0, self.pet_size, area)
+        strip = self.level_strip_height()
+        if strip and self.level_text:
+            font = self.level_label.font()
+            font.setPointSize(max(6, round(self.pet_size * 0.105)))
+            font.setBold(True)
+            self.level_label.setFont(font)
+            alpha = int(255 * LEVEL_OPACITY)
+            self.level_label.setStyleSheet(
+                f"background: transparent; color: rgba(233, 236, 241, {alpha});"
+            )
+            self.level_label.setGeometry(0, area, self.pet_size - 2, strip)
+            self.level_label.show()
+            self.level_label.raise_()
+        else:
+            self.level_label.hide()
         # Bench sprites sit bottom-aligned with the main so the row reads as a
         # line-up standing on the same ground rather than floating boxes.
         x = self.pet_size + gap
+        baseline = self.sprite_area()
         for label, path in zip(self.bench_labels, self.bench_paths):
             if path is None:
                 label.hide()
                 continue
-            label.setGeometry(x, self.pet_size - small, small, small)
+            label.setGeometry(x, baseline - small, small, small)
             label.show()
             x += small + gap
 
@@ -496,11 +494,22 @@ class FloatingPetWindow(QWidget):
         self.loading_frame = (self.loading_frame + 1) % 8
         self._render_current_frame()
 
+    def sprite_area(self) -> int:
+        """The sprite always gets the full pet size; the strip is extra height."""
+        return self.pet_size
+
+    def level_strip_height(self) -> int:
+        if not self.level_text:
+            return 0
+        return max(10, round(self.pet_size * LEVEL_STRIP_SCALE))
+
     def set_level(self, text: str) -> None:
-        """Level shown in the sprite's corner, e.g. 'Lv. 42'. Empty hides it."""
+        """Level shown in a strip beneath the sprite, e.g. 'Lv. 42'."""
         if text == self.level_text:
             return
         self.level_text = text or ""
+        self.level_label.setText(self.level_text)
+        self._relayout()
         self._render_current_frame()
 
     def is_evolving(self) -> bool:
@@ -582,15 +591,13 @@ class FloatingPetWindow(QWidget):
             return
         self.label.setText("")
         self.label.setStyleSheet("background: transparent;")
+        area = self.sprite_area()
         self.label.setPixmap(
-            _draw_level_badge(
-                pixmap.scaled(
-                    self.pet_size,
-                    self.pet_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.FastTransformation,
-                ),
-                self.level_text,
+            pixmap.scaled(
+                area,
+                area,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.FastTransformation,
             )
         )
 
@@ -862,16 +869,22 @@ class FloatingPetController(QObject):
         width = self.pet.width()
         return max(self.size, int(width) if width else self.size)
 
+    def _window_height(self) -> int:
+        height = self.pet.height()
+        return max(self.size, int(height) if height else self.size)
+
     def _resolve_position(self, x: Any, y: Any) -> tuple[int, int]:
         """Clamp into a work area, then dock to the taskbar edge when snapping."""
-        width = self._window_width()
-        target = recover_pet_position(x, y, self.size, self._screen_rects(), width=width)
+        width, height = self._window_width(), self._window_height()
+        target = recover_pet_position(
+            x, y, self.size, self._screen_rects(), width=width, height=height
+        )
         if not self.snap_enabled:
             return target
         screen = self._screen_for(*target)
         if screen is None:
             return target
-        return snap_pet_position(target[0], self.size, screen, width=width)
+        return snap_pet_position(target[0], self.size, screen, width=width, height=height)
 
     def set_level(self, text: str) -> None:
         self.pet.set_level(text)
