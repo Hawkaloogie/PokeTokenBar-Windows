@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import re
 import threading
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -621,12 +622,30 @@ class UITests(unittest.TestCase):
         self.assertIn("$2.50", text)
 
     def test_light_dark_and_system_themes_share_accessibility_rules(self):
+        from poketokenbar_windows.theme import (
+            RADIUS_CARD,
+            RADIUS_CONTROL,
+            palette,
+        )
+
         for theme in ("system", "light", "dark"):
             stylesheet = theme_stylesheet(theme)
             self.assertIn("QPushButton:focus", stylesheet)
             self.assertIn("QProgressBar", stylesheet)
-        self.assertIn("#17191d", theme_stylesheet("dark"))
-        self.assertIn("#faf9f7", theme_stylesheet("light"))
+            # Every theme is built from the tokens, so no colour is frozen here.
+            self.assertIn(palette(theme)["bg"], stylesheet)
+            self.assertIn(palette(theme)["accent"], stylesheet)
+
+        self.assertNotEqual(
+            palette("dark")["bg"], palette("light")["bg"],
+            "light and dark must not share a background",
+        )
+        # Fluent shape tokens: controls at 4px, layers at 8px, nothing else.
+        radii = set(re.findall(r"border-radius: (\d+)px", theme_stylesheet("dark")))
+        self.assertTrue(
+            radii <= {str(RADIUS_CONTROL), str(RADIUS_CARD), "5"},
+            f"unexpected corner radii in the stylesheet: {sorted(radii)}",
+        )
 
     def test_desktop_pet_shows_progress_overlay_on_hover(self):
         pet = DesktopPet(self.settings)
