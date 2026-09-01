@@ -6,6 +6,8 @@ from typing import Any, Callable
 from PySide6.QtCore import QPoint, QSize, Qt, QTimer, Signal, QObject
 from PySide6.QtGui import (
     QColor,
+    QFont,
+    QFontMetrics,
     QContextMenuEvent,
     QMouseEvent,
     QMovie,
@@ -51,10 +53,14 @@ PET_SNAP_KEY = "floating_pet/snap_taskbar"
 BENCH_SCALE = 0.5
 BENCH_GAP_SCALE = 0.06
 
-# The level sits in a strip UNDER the sprite rather than on top of it, so the
-# artwork is never covered. Half opacity keeps it glanceable without competing
-# with the Pokemon for attention.
-LEVEL_STRIP_SCALE = 0.18
+# The level sits to the LEFT of the sprite, on the same baseline as its feet.
+# Beside rather than below keeps the window exactly as tall as the artwork, so
+# snapping to the taskbar still lands the Pokemon's feet on the edge.
+LEVEL_FONT_SCALE = 0.085
+LEVEL_GAP_SCALE = 0.04
+# Beyond this share of the pet width the 'Lv. ' prefix is dropped, so a small
+# pet is not dominated by its own level readout.
+LEVEL_MAX_SHARE = 0.6
 LEVEL_OPACITY = 0.5
 PET_ALERTS_KEY = "floating_pet/alerts_enabled"
 PET_ALERT_MEMORY_KEY = "floating_pet/alert_memory"
@@ -276,26 +282,32 @@ class FloatingPetWindow(QWidget):
         small = self.bench_size()
         width = self.pet_size + (len(filled) * (small + gap) if filled else 0)
         area = self.sprite_area()
-        self.setFixedSize(width, area + self.level_strip_height())
-        self.label.setGeometry(0, 0, self.pet_size, area)
-        strip = self.level_strip_height()
-        if strip and self.level_text:
-            font = self.level_label.font()
-            font.setPointSize(max(6, round(self.pet_size * 0.105)))
-            font.setBold(True)
+        lead = self.level_width()
+        # Height stays exactly the sprite height so snapping still puts the
+        # Pokemon's feet on the taskbar edge rather than floating above it.
+        self.setFixedSize(lead + width, area)
+        self.label.setGeometry(lead, 0, self.pet_size, area)
+        if lead and self.level_text:
+            font = self._level_font()
             self.level_label.setFont(font)
+            self.level_label.setText(self.level_display_text())
             alpha = int(255 * LEVEL_OPACITY)
             self.level_label.setStyleSheet(
                 f"background: transparent; color: rgba(233, 236, 241, {alpha});"
             )
-            self.level_label.setGeometry(0, area, self.pet_size - 2, strip)
+            text_height = QFontMetrics(font).height()
+            gap = max(2, round(self.pet_size * LEVEL_GAP_SCALE))
+            # Bottom-aligned with the sprite's feet.
+            self.level_label.setGeometry(
+                0, area - text_height, max(0, lead - gap), text_height
+            )
             self.level_label.show()
             self.level_label.raise_()
         else:
             self.level_label.hide()
         # Bench sprites sit bottom-aligned with the main so the row reads as a
         # line-up standing on the same ground rather than floating boxes.
-        x = self.pet_size + gap
+        x = lead + self.pet_size + gap
         baseline = self.sprite_area()
         for label, path in zip(self.bench_labels, self.bench_paths):
             if path is None:
@@ -495,20 +507,45 @@ class FloatingPetWindow(QWidget):
         self._render_current_frame()
 
     def sprite_area(self) -> int:
-        """The sprite always gets the full pet size; the strip is extra height."""
+        """The sprite always gets the full pet size."""
         return self.pet_size
 
-    def level_strip_height(self) -> int:
+    def _level_font(self) -> QFont:
+        font = QFont(self.level_label.font())
+        font.setPointSize(max(6, round(self.pet_size * LEVEL_FONT_SCALE)))
+        font.setBold(True)
+        return font
+
+    def level_display_text(self) -> str:
+        """The level as shown, in the widest form that still fits beside the pet.
+
+        'Lv. 100' is too wide to sit next to a small sprite without dominating
+        it, so fall back through a compact form to the bare number.
+        """
         if not self.level_text:
+            return ""
+        digits = self.level_text.rsplit(" ", 1)[-1]
+        metrics = QFontMetrics(self._level_font())
+        budget = self.pet_size * LEVEL_MAX_SHARE
+        for candidate in (self.level_text, f"Lv{digits}", digits):
+            if metrics.horizontalAdvance(candidate) <= budget:
+                return candidate
+        return digits or self.level_text
+
+    def level_width(self) -> int:
+        """Horizontal room the level needs beside the sprite, 0 when hidden."""
+        text = self.level_display_text()
+        if not text:
             return 0
-        return max(10, round(self.pet_size * LEVEL_STRIP_SCALE))
+        metrics = QFontMetrics(self._level_font())
+        gap = max(2, round(self.pet_size * LEVEL_GAP_SCALE))
+        return metrics.horizontalAdvance(text) + gap
 
     def set_level(self, text: str) -> None:
         """Level shown in a strip beneath the sprite, e.g. 'Lv. 42'."""
         if text == self.level_text:
             return
         self.level_text = text or ""
-        self.level_label.setText(self.level_text)
         self._relayout()
         self._render_current_frame()
 
