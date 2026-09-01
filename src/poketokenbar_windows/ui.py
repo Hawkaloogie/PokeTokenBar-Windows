@@ -96,6 +96,7 @@ from .floating_pet import (
     PET_ALERTS_KEY,
     PET_ENABLED_KEY,
     PET_SIZE_KEY,
+    PET_SNAP_KEY,
     AnimatedSpriteFrameStabilizer,
     FloatingPetController,
 )
@@ -121,7 +122,15 @@ from .notifications import (
     normalize_warning_threshold,
 )
 from .pet_logic import PET_DEFAULT_SIZE, PET_MAX_SIZE, PET_MIN_SIZE, PET_SIZE_STEP, normalize_pet_size, settings_bool
-from .pokemon import EGG_HATCH_THRESHOLD, PokeAPIClient, egg_price, phase_threshold
+from .pokemon import (
+    EGG_HATCH_THRESHOLD,
+    GENERATIONS,
+    PokeAPIClient,
+    egg_price,
+    generation_label,
+    normalize_generation,
+    phase_threshold,
+)
 from .state import (
     GameState,
     StateStore,
@@ -132,6 +141,7 @@ from .state import (
     companion_progress_percent,
     owned_representative_options,
     representative_subject,
+    set_generation_filter,
     set_representative,
     usage_delta,
     use_item,
@@ -632,6 +642,8 @@ class MainWindow(QMainWindow):
     refresh_requested = Signal()
     pet_visibility_changed = Signal(bool)
     pet_size_changed = Signal(int)
+    pet_snap_changed = Signal(bool)
+    generation_filter_changed = Signal(object)
     preferences_changed = Signal()
     representative_changed = Signal(object)
     language_changed = Signal(str)
@@ -1002,12 +1014,48 @@ class MainWindow(QMainWindow):
         self.pet_size_label = QLabel(f"{self.pet_size_slider.value()} px")
         pet_size_row.addWidget(self.pet_size_label)
         desktop_layout.addLayout(pet_size_row)
+        self.pet_snap_check = QCheckBox("Snap above the taskbar")
+        self.pet_snap_check.setToolTip(
+            "Dock the companion to the bottom of the screen work area, just above "
+            "the taskbar on whichever edge it sits. Drag still moves it sideways."
+        )
+        self.pet_snap_check.setChecked(
+            settings_bool(self.settings.value(PET_SNAP_KEY, False), False)
+        )
+        self.pet_snap_check.toggled.connect(self._save_pet_snap)
+        desktop_layout.addWidget(self.pet_snap_check)
         self.pet_alerts_check = self._setting_check(
             "Show transient usage and full-reset bubbles", PET_ALERTS_KEY, True
         )
         desktop_layout.addWidget(self.pet_alerts_check)
         self._set_pet_controls_enabled(self.pet_check.isChecked())
         layout.addWidget(desktop)
+
+        hatch_group = QGroupBox("Hatching")
+        hatch_layout = QVBoxLayout(hatch_group)
+        generation_row = QHBoxLayout()
+        generation_row.addWidget(QLabel("Generation"))
+        self.generation_combo = QComboBox()
+        self.generation_combo.addItem("All generations (1-5)", None)
+        for number, region, low, high in GENERATIONS:
+            self.generation_combo.addItem(f"Gen {number} - {region} (#{low}-{high})", number)
+        self.generation_combo.setToolTip(
+            "Restrict future hatches to one generation. Applies to the next hatch; "
+            "a Pokemon already being raised is unaffected."
+        )
+        self.generation_combo.currentIndexChanged.connect(
+            lambda _index: self._save_generation_filter()
+        )
+        generation_row.addWidget(self.generation_combo, 1)
+        hatch_layout.addLayout(generation_row)
+        self.generation_note = QLabel(
+            "Only generations 1-5 are available - the animated sprite set this app "
+            "uses does not cover later generations."
+        )
+        self.generation_note.setWordWrap(True)
+        self.generation_note.setStyleSheet("color: palette(mid);")
+        hatch_layout.addWidget(self.generation_note)
+        layout.addWidget(hatch_group)
 
         tray_group = QGroupBox("Tray tooltip")
         tray_layout = QVBoxLayout(tray_group)
@@ -1301,6 +1349,13 @@ class MainWindow(QMainWindow):
         self.pet_size_label.setText(f"{normalized} px")
         self.pet_size_changed.emit(normalized)
 
+    def _save_pet_snap(self, enabled: bool) -> None:
+        self.settings.setValue(PET_SNAP_KEY, bool(enabled))
+        self.pet_snap_changed.emit(bool(enabled))
+
+    def _save_generation_filter(self) -> None:
+        self.generation_filter_changed.emit(self.generation_combo.currentData())
+
     def _save_interval(self) -> None:
         self.settings.setValue("refresh_minutes", self.interval_combo.currentData())
         self.refresh_requested.emit()
@@ -1317,6 +1372,7 @@ class MainWindow(QMainWindow):
     def _set_pet_controls_enabled(self, enabled: bool) -> None:
         self.pet_size_slider.setEnabled(enabled)
         self.pet_size_label.setEnabled(enabled)
+        self.pet_snap_check.setEnabled(enabled)
         self.pet_alerts_check.setEnabled(enabled)
 
     def sync_floating_pet_settings(self, *, enabled: bool | None = None, size: int | None = None) -> None:
@@ -1333,8 +1389,23 @@ class MainWindow(QMainWindow):
 
     def set_state(self, state: GameState) -> None:
         self.state = state
+        self._sync_generation_combo()
         self._render_bag_shop()
         self._render_collection()
+
+    def _sync_generation_combo(self) -> None:
+        combo = getattr(self, "generation_combo", None)
+        if combo is None:
+            return
+        target = normalize_generation(self.state.generation_filter)
+        if combo.currentData() == target:
+            return
+        for index in range(combo.count()):
+            if combo.itemData(index) == target:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(index)
+                combo.blockSignals(False)
+                return
 
     def render(self, result: RefreshResult) -> None:
         self.setUpdatesEnabled(False)
@@ -1491,15 +1562,17 @@ class MainWindow(QMainWindow):
         detail = ""
         now = datetime.now().astimezone()
         if window.resets_at is not None:
-            detail = (
-                " · "
-                + format_limit_event_time(
-                    "resets",
-                    window.resets_at,
-                    time_mode,
-                    now,
-                )
+            detail = format_limit_event_time(
+                "resets",
+                window.resets_at,
+                time_mode,
+                now,
             )
+        else:
+            # Anthropic's usage response does not always carry a reset
+            # timestamp. Say so rather than inventing one - a wrong reset time
+            # is worse than a missing one when you are pacing against a limit.
+            detail = "resets: not reported"
         if settings_bool(
             self.settings.value(
                 FORECAST_ENABLED_KEY,
@@ -1525,9 +1598,12 @@ class MainWindow(QMainWindow):
                     detail += f" · forecast: {reason}"
         title = QLabel(
             f"{provider} · {window.label} · "
-            f"{limit_percent_text(used, display_mode)}{detail}"
+            f"{limit_percent_text(used, display_mode)}"
         )
         title.setWordWrap(True)
+        reset_line = QLabel(detail)
+        reset_line.setWordWrap(True)
+        reset_line.setStyleSheet("color: palette(mid); font-size: 11px;")
         bar = QProgressBar()
         bar.setRange(0, 100)
         displayed = window.remaining_percent if display_mode == "remaining" else used
@@ -1547,6 +1623,7 @@ class MainWindow(QMainWindow):
         color = "#16a34a" if used < warning else ("#d97706" if used < critical else "#dc2626")
         bar.setStyleSheet(f"QProgressBar::chunk {{ background: {color}; border-radius: 3px; }}")
         layout.addWidget(title)
+        layout.addWidget(reset_line)
         layout.addWidget(bar)
         return widget
 
@@ -1805,9 +1882,13 @@ class MainWindow(QMainWindow):
         number = QLabel(f"{'✨ ' if shiny else ''}#{species_id:03d}")
         number.setAlignment(Qt.AlignmentFlag.AlignCenter)
         number.setStyleSheet("color: #6b7280;")
+        generation = QLabel(generation_label(species_id))
+        generation.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        generation.setStyleSheet("color: #6b7280;")
         layout.addWidget(sprite)
         layout.addWidget(number)
         layout.addWidget(name)
+        layout.addWidget(generation)
         if shiny:
             toggle = QPushButton("Normal / ✨ Shiny")
             toggle.setToolTip("Alternate this owned species between its normal and Shiny sprite")
@@ -1852,9 +1933,12 @@ class MainWindow(QMainWindow):
         layout.addLayout(header)
 
         summary = QLabel(
-            f"You have {owned_name} only · stage {owned_index + 1} of {len(path_ids)}"
-            if owned_index + 1 < len(path_ids)
-            else f"Fully evolved {owned_name}"
+            (
+                f"You have {owned_name} only · stage {owned_index + 1} of {len(path_ids)}"
+                if owned_index + 1 < len(path_ids)
+                else f"Fully evolved {owned_name}"
+            )
+            + f" · {generation_label(display_id)}"
         )
         summary.setStyleSheet("color: palette(text);")
         layout.addWidget(summary)
@@ -2010,6 +2094,8 @@ class TrayController(QObject):
         self.window.refresh_requested.connect(self._refresh_and_reschedule)
         self.window.pet_visibility_changed.connect(self._set_pet_visible)
         self.window.pet_size_changed.connect(self._set_pet_size)
+        self.window.pet_snap_changed.connect(self._set_pet_snap)
+        self.window.generation_filter_changed.connect(self._set_generation_filter)
         self.window.preferences_changed.connect(self._preferences_changed)
         self.window.representative_changed.connect(self._set_representative)
         self.window.language_changed.connect(self._set_language)
@@ -2115,6 +2201,25 @@ class TrayController(QObject):
     def _set_pet_size(self, size: int) -> None:
         self.floating_pet.set_size(size)
         self.window.sync_floating_pet_settings(size=self.floating_pet.size)
+
+    def _set_pet_snap(self, enabled: bool) -> None:
+        self.floating_pet.set_snap_enabled(bool(enabled))
+
+    def _set_generation_filter(self, generation: object) -> None:
+        try:
+            with self.state_lock:
+                candidate = copy.deepcopy(self.state)
+                set_generation_filter(candidate, generation)
+                self.store.save(candidate)
+                self.state = candidate
+        except Exception:  # noqa: BLE001
+            QMessageBox.warning(
+                self.window,
+                "PokeTokenBar",
+                "The hatch generation could not be changed. Your save was not changed.",
+            )
+            return
+        self.window.set_state(self.state)
 
     def _set_representative(self, selection: object) -> None:
         species_id: int | None = None

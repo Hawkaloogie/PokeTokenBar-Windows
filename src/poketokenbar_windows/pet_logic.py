@@ -92,6 +92,38 @@ def _clamp_axis(value: float, start: int, span: int, size: int, margin: int) -> 
     return round(min(high, max(low, value)))
 
 
+def snap_pet_position(
+    x: Any,
+    size: Any,
+    screen: ScreenRect,
+    *,
+    margin: int = 8,
+) -> tuple[int, int]:
+    """Dock the pet to the bottom edge of a screen's work area.
+
+    The work area already excludes the taskbar on whichever edge it is docked,
+    so sitting at its bottom puts the pet directly above the taskbar without
+    hardcoding any taskbar height. Horizontal position is preserved, only
+    clamped so the pet stays fully on screen.
+    """
+    pet_size = normalize_pet_size(size)
+    try:
+        current_x = float(x)
+    except (TypeError, ValueError):
+        current_x = float(screen.x)
+    if not math.isfinite(current_x):
+        current_x = float(screen.x)
+    snapped_x = _clamp_axis(current_x, screen.x, screen.width, pet_size, margin)
+    snapped_y = _clamp_axis(
+        float(screen.bottom - margin - pet_size),
+        screen.y,
+        screen.height,
+        pet_size,
+        margin,
+    )
+    return snapped_x, snapped_y
+
+
 def recover_pet_position(
     x: Any,
     y: Any,

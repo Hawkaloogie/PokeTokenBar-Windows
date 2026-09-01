@@ -34,6 +34,7 @@ from .pet_logic import (
     pet_hover_text,
     recover_pet_position,
     settings_bool,
+    snap_pet_position,
 )
 from .windows import APP_NAME, apply_floating_tool_window_style, native_window_styles
 
@@ -42,6 +43,7 @@ PET_ENABLED_KEY = "floating_pet/enabled"
 PET_SIZE_KEY = "floating_pet/size"
 PET_X_KEY = "floating_pet/position_x"
 PET_Y_KEY = "floating_pet/position_y"
+PET_SNAP_KEY = "floating_pet/snap_taskbar"
 PET_ALERTS_KEY = "floating_pet/alerts_enabled"
 PET_ALERT_MEMORY_KEY = "floating_pet/alert_memory"
 MENU_OPEN_LABEL = "Open PokeTokenBar"
@@ -627,6 +629,7 @@ class FloatingPetController(QObject):
         self.show_cost = settings_bool(settings.value("tray_show_cost", False), False)
         self.show_limit = settings_bool(settings.value("tray_show_limit", True), True)
         self.size = normalize_pet_size(settings.value(PET_SIZE_KEY, PET_DEFAULT_SIZE))
+        self.snap_enabled = settings_bool(settings.value(PET_SNAP_KEY, False), False)
         self.result: Any | None = None
         self.initial_reveal_played = False
         self.reveal_on_next_update = False
@@ -666,21 +669,48 @@ class FloatingPetController(QObject):
             for rect in (screen.availableGeometry() for screen in self.app.screens())
         ]
 
+    def _screen_for(self, x: int, y: int) -> ScreenRect | None:
+        """Work area the pet currently sits on: most overlap, else nearest."""
+        rects = self._screen_rects()
+        if not rects:
+            return None
+        overlapping = max(rects, key=lambda r: r.overlap_area(x, y, self.size))
+        if overlapping.overlap_area(x, y, self.size) > 0:
+            return overlapping
+        return min(rects, key=lambda r: r.distance_squared(x, y))
+
+    def _resolve_position(self, x: Any, y: Any) -> tuple[int, int]:
+        """Clamp into a work area, then dock to the taskbar edge when snapping."""
+        target = recover_pet_position(x, y, self.size, self._screen_rects())
+        if not self.snap_enabled:
+            return target
+        screen = self._screen_for(*target)
+        if screen is None:
+            return target
+        return snap_pet_position(target[0], self.size, screen)
+
+    def set_snap_enabled(self, enabled: bool) -> None:
+        """Turn taskbar docking on or off and reposition immediately."""
+        self.snap_enabled = bool(enabled)
+        self.settings.setValue(PET_SNAP_KEY, self.snap_enabled)
+        self.settings.sync()
+        self._save_position(self.pet.x(), self.pet.y())
+
     def _restore_position(self) -> None:
         x = self.settings.value(PET_X_KEY, float("nan"))
         y = self.settings.value(PET_Y_KEY, float("nan"))
-        target = recover_pet_position(x, y, self.size, self._screen_rects())
+        target = self._resolve_position(x, y)
         self.pet.move(*target)
         self._save_position(*target)
 
     def _screens_changed(self) -> None:
-        target = recover_pet_position(self.pet.x(), self.pet.y(), self.size, self._screen_rects())
+        target = self._resolve_position(self.pet.x(), self.pet.y())
         self.pet.move(*target)
         self._save_position(*target)
         self._position_auxiliary_windows()
 
     def _save_position(self, x: int, y: int) -> None:
-        target = recover_pet_position(x, y, self.size, self._screen_rects())
+        target = self._resolve_position(x, y)
         if target != (x, y):
             self.pet.move(*target)
         self.settings.setValue(PET_X_KEY, target[0])

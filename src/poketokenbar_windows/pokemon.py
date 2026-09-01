@@ -35,6 +35,62 @@ NATURES = [
 
 RARITY_RANK = {"common": 0, "uncommon": 1, "rare": 2, "legendary": 3}
 
+# National Pokedex species-ID ranges. The hatch pool stops at #649 because the
+# animated sprite set this app pulls (generation-v black-white) only covers
+# generations 1-5; later generations have no artwork to display.
+GENERATIONS: list[tuple[int, str, int, int]] = [
+    (1, "Kanto", 1, 151),
+    (2, "Johto", 152, 251),
+    (3, "Hoenn", 252, 386),
+    (4, "Sinnoh", 387, 493),
+    (5, "Unova", 494, 649),
+]
+GENERATION_MIN_ID = GENERATIONS[0][2]
+GENERATION_MAX_ID = GENERATIONS[-1][3]
+
+
+def generation_of(species_id: int) -> int | None:
+    """Generation number for a species ID, or None when outside the pool."""
+    for number, _region, low, high in GENERATIONS:
+        if low <= species_id <= high:
+            return number
+    return None
+
+
+def generation_region(number: int | None) -> str | None:
+    """Region name for a generation number, or None when unknown."""
+    for gen, region, _low, _high in GENERATIONS:
+        if gen == number:
+            return region
+    return None
+
+
+def generation_label(species_id: int) -> str:
+    """Human-readable generation tag, e.g. 'Gen 2 - Johto'."""
+    number = generation_of(species_id)
+    if number is None:
+        return "Unknown generation"
+    return f"Gen {number} - {generation_region(number)}"
+
+
+def normalize_generation(value: Any) -> int | None:
+    """Coerce a stored value into a valid generation number, else None (= All)."""
+    if value is None:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if generation_region(number) is not None else None
+
+
+def generation_bounds(number: int | None) -> tuple[int, int]:
+    """Species-ID range to roll within: one generation, or the whole pool."""
+    for gen, _region, low, high in GENERATIONS:
+        if gen == number:
+            return low, high
+    return GENERATION_MIN_ID, GENERATION_MAX_ID
+
 
 def rarity_from(capture_rate: int, is_legendary: bool, is_mythical: bool) -> str:
     if is_legendary or is_mythical:
@@ -146,11 +202,18 @@ class PokeAPIClient:
         suffix = self._random_path(child)
         return [species_id] + suffix
 
-    def hatch(self, minimum_rarity: str | None = None, shiny_charm: bool = False, max_attempts: int = 1200) -> HatchResult:
+    def hatch(
+        self,
+        minimum_rarity: str | None = None,
+        shiny_charm: bool = False,
+        max_attempts: int = 1200,
+        generation: int | None = None,
+    ) -> HatchResult:
         minimum_rank = RARITY_RANK.get(minimum_rarity or "common", 0)
+        low, high = generation_bounds(normalize_generation(generation))
         last_error: Exception | None = None
         for _ in range(max_attempts):
-            species_id = random.randint(1, 649)
+            species_id = random.randint(low, high)
             if species_id == DITTO_SPECIES_ID:
                 continue
             try:

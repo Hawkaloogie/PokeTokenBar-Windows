@@ -72,7 +72,11 @@ from poketokenbar_windows.windows import (
 
 
 class FakeAPI:
-    def hatch(self, minimum_rarity=None, shiny_charm=False):
+    def __init__(self):
+        self.last_generation = "unset"
+
+    def hatch(self, minimum_rarity=None, shiny_charm=False, generation=None):
+        self.last_generation = generation
         return HatchResult(
             base_id=1,
             path_ids=[1, 2, 3],

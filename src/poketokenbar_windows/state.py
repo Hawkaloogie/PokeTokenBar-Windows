@@ -15,6 +15,7 @@ from .pokemon import (
     SHINY_CHARM_PRICE,
     PokeAPIClient,
     egg_price,
+    normalize_generation,
     phase_threshold,
 )
 from .windows import state_dir
@@ -70,6 +71,10 @@ class GameState:
     language: str = "en"
     claimed_limit_windows: list[str] = field(default_factory=list)
     candy_feature_seeded: bool = False
+    # None = hatch from every available generation (1-5); an int restricts
+    # future hatches to that generation only. Applies at hatch time, so a
+    # Pokemon already being raised is unaffected by a change here.
+    generation_filter: int | None = None
 
     @property
     def wallet(self) -> int:
@@ -246,6 +251,7 @@ class StateStore:
                 language=str(raw.get("language", "en")),
                 claimed_limit_windows=[str(v) for v in raw.get("claimed_limit_windows", [])],
                 candy_feature_seeded=bool(raw.get("candy_feature_seeded", False)),
+                generation_filter=normalize_generation(raw.get("generation_filter")),
             )
             for key in ("rare_candy", "mint", "shiny_charm"):
                 state.inventory.setdefault(key, 0)
@@ -339,7 +345,11 @@ def apply_usage(state: GameState, delta: int, api: PokeAPIClient) -> list[str]:
             remaining -= take
             if state.egg_usage < EGG_HATCH_THRESHOLD:
                 break
-            hatch = api.hatch(minimum_rarity=state.egg_tier, shiny_charm=state.shiny_charm_active)
+            hatch = api.hatch(
+                minimum_rarity=state.egg_tier,
+                shiny_charm=state.shiny_charm_active,
+                generation=state.generation_filter,
+            )
             state.mon = MonState(
                 base_id=hatch.base_id,
                 path_ids=hatch.path_ids,
@@ -437,6 +447,16 @@ def buy_egg(state: GameState, tier: str | None) -> tuple[bool, str]:
     state.egg_tier = tier
     normalize_representative(state)
     return True, "Fresh egg ready"
+
+
+def set_generation_filter(state: GameState, generation: Any) -> int | None:
+    """Restrict future hatches to one generation, or None for all of them.
+
+    Takes effect on the next hatch only - a Pokemon already being raised keeps
+    growing normally, and the current egg still hatches under the new filter.
+    """
+    state.generation_filter = normalize_generation(generation)
+    return state.generation_filter
 
 
 def apply_limit_rewards(state: GameState, limits: dict[str, Any]) -> list[str]:

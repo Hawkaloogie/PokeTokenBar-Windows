@@ -177,7 +177,9 @@ class UITests(unittest.TestCase):
         window = self._window()
         window.render(result)
         widget = window.limits_list.itemWidget(window.limits_list.item(0))
-        title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
+        title = " · ".join(
+            label.text() for label in widget.findChildren(QLabel) if label.text()
+        )
         self.assertIn("25% remaining", title)
         self.assertIn("resets in", title)
         self.assertIn("forecast: full in ~1h", title)
@@ -191,7 +193,9 @@ class UITests(unittest.TestCase):
         self.settings.setValue("limits_forecast_enabled", False)
         window.render(result)
         widget = window.limits_list.itemWidget(window.limits_list.item(0))
-        title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
+        title = " · ".join(
+            label.text() for label in widget.findChildren(QLabel) if label.text()
+        )
         self.assertNotIn("forecast:", title)
 
     def test_limit_display_uses_upstream_style_segmented_toggle(self):
@@ -241,10 +245,8 @@ class UITests(unittest.TestCase):
         )
 
         widget = window.limits_list.itemWidget(window.limits_list.item(0))
-        title = next(
-            label.text()
-            for label in widget.findChildren(QLabel)
-            if "Codex" in label.text()
+        title = " · ".join(
+            label.text() for label in widget.findChildren(QLabel) if label.text()
         )
         self.assertIn(f"resets {reset:%d %b, %H:%M}", title)
         self.assertIn("forecast: full ", title)
@@ -280,7 +282,9 @@ class UITests(unittest.TestCase):
             )
         )
         widget = window.limits_list.itemWidget(window.limits_list.item(0))
-        title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
+        title = " · ".join(
+            label.text() for label in widget.findChildren(QLabel) if label.text()
+        )
         self.assertIn("forecast: not enough data yet", title)
         self.assertNotIn("(<5% used)", title)
 
@@ -313,7 +317,9 @@ class UITests(unittest.TestCase):
             )
         )
         widget = window.limits_list.itemWidget(window.limits_list.item(0))
-        title = next(label.text() for label in widget.findChildren(QLabel) if "Codex" in label.text())
+        title = " · ".join(
+            label.text() for label in widget.findChildren(QLabel) if label.text()
+        )
         self.assertIn("forecast: safe until reset", title)
         self.assertNotIn("not expected before reset", title)
 
