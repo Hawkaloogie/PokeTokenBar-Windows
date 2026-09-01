@@ -1,7 +1,34 @@
 # PokeTokenBar Windows — party fork
 
 Your local AI coding-token usage raises a Pokemon companion from the Windows
-notification area. This fork adds a party of six, trading, and a lot else.
+notification area.
+
+**This is a fork of [pnmartinez/PokeTokenBar-Windows](https://github.com/pnmartinez/PokeTokenBar-Windows).
+Everything in the table below is what I added. Everything else is theirs.**
+
+## What's different in this fork
+
+| | Upstream | This fork |
+|---|---|---|
+| **Pokemon at once** | One | **Six** — one main plus a five-slot bench. Only the main grows from tokens and candy. |
+| **Trading** | None | **Value-matched offers.** Rarity, how far you have raised it, and shiny all set a Pokemon's worth, so a fresh Pidgey cannot buy a Mewtwo. The Pokemon is the entire price — no tokens. |
+| **Storage** | Pokedex only | **Professor Oak's Ranch** — everything you own that is not in your party. |
+| **Favourites** | None | Star any Pokemon. The star follows it between party and Ranch, and favourites can never be lost to a trade. |
+| **Generations** | All | Pick a **cap** — Gen 3 means Gens 1 to 3. Pikachu added as a starter. |
+| **Light users** | Progress is slow | **Pace setting**: a speed boost on growth only. Shop prices never change, and every number shown is your real usage. |
+| **Level** | Per stage | Spans the **whole evolution line**, so it does not reset each time your Pokemon evolves. |
+| **Evolution** | Happens silently | **Waits for you to click**, then plays an animation. |
+| **Reset clock** | Estimated | Estimate was wrong by 161 minutes every time, so it is off. You set your reset once and it rolls forward in 5-hour blocks. |
+| **Desktop pet** | Floats loose | **Snaps above the taskbar**, picks a screen edge, and lines the party up beside it. |
+| **Settings** | Applied instantly | Sidebar layout with a **Save button** — a stray scroll wheel used to change your generation the moment it passed over a dropdown. |
+| **Theme** | Blue-tinted dark | **True neutral grey**, light and dark, with real Windows theme detection. |
+| **Running twice** | Two copies | Focuses the copy already running. |
+
+Detail on every line above, plus the bugs fixed along the way, is in
+**[CHANGES-IN-THIS-FORK.md](CHANGES-IN-THIS-FORK.md)**.
+
+If a bug is in one of those, it is mine — please report it here rather than
+upstream.
 
 > **Heads up: this is my first time editing someone else's project in public, so
 > I am not sure I have all the conventions right.** If I have credited someone
@@ -20,16 +47,6 @@ I did not build this app. I built on top of two projects that other people made:
   started from, and it is the larger half of what you are running.
 
 Full breakdown of who wrote what is in [NOTICE.md](NOTICE.md).
-
-**Everything I added is listed in
-[CHANGES-IN-THIS-FORK.md](CHANGES-IN-THIS-FORK.md).** Short version: a
-six-Pokemon party where only the main one grows, value-matched trading where the
-Pokemon is the whole price, Professor Oak's Ranch, generation caps, a pace
-setting for light users, a rebuilt settings screen and theme, and a stack of bug
-fixes.
-
-If a bug is in something on that list, it is mine. Please report it here rather
-than upstream.
 
 > **Status: alpha.** The token tracker, game loop, tray UI, local state, shop/bag, runtime Pokemon fetching, Windows startup integration, and Claude/Codex official-limit checks are implemented. See **Parity / known gaps** before replacing the macOS app in a workflow you depend on.
 
