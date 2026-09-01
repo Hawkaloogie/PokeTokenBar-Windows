@@ -309,16 +309,26 @@ class FloatingPetWindow(QWidget):
         self._render_current_frame()
 
     def main_visible_height(self) -> int:
-        """Height of the main's actual artwork, ignoring its transparent padding."""
-        pixmap = self.label.pixmap()
-        bounds = _visible_rect(pixmap) if pixmap is not None else None
-        if bounds is None or bounds.height() <= 0:
-            return self.pet_size
-        return bounds.height()
+        """The height the main slot is drawn at.
+
+        Fixed to the configured pet size rather than measured off whatever
+        sprite happens to be loaded. It used to return the main's actual
+        artwork bounds, which made every other size in the window depend on
+        the current sprite's padding: an egg (artwork covering under a third
+        of its image) dragged the whole party down with it, and a Pokemon on a
+        static fallback did the same to a lesser degree. The party's scale
+        should be a property of the user's size setting, not of which sprite
+        is in the main slot this minute.
+        """
+        return self.pet_size
 
     def bench_size(self) -> int:
-        """Target artwork height for a benched companion."""
-        return max(12, round(self.main_visible_height() * BENCH_SCALE))
+        """Target artwork height for a benched companion.
+
+        A fixed fraction of the configured pet size, so a bench slot is always
+        the same size no matter what the main slot currently holds.
+        """
+        return max(12, round(self.pet_size * BENCH_SCALE))
 
     def _relayout(self) -> None:
         """Size the window to the main sprite plus however many bench slots show."""
@@ -396,7 +406,7 @@ class FloatingPetWindow(QWidget):
             if pixmap.isNull():
                 pixmap = _pokeball_pixmap(small)
             # Trim the padding so the label's bottom IS the feet, then scale by
-            # HEIGHT so the companion is reliably half the main's artwork -
+            # HEIGHT so the companion is reliably half the configured pet size -
             # bounding by the box let a wide sprite come out taller than the main.
             label.setAlignment(
                 Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom
@@ -698,16 +708,33 @@ class FloatingPetWindow(QWidget):
             )
             return
         pixmap = QPixmap()
+        animated = False
         if self.movie is not None:
             pixmap = self.frame_stabilizer.filter(self.movie.currentPixmap())
+            animated = True
         elif self.sprite_path is not None and self.sprite_path.exists():
             pixmap = QPixmap(str(self.sprite_path))
         if pixmap.isNull():
             pixmap = _egg_pixmap(self.pet_size) if self.is_egg else QPixmap()
+            animated = False
         if pixmap.isNull():
             self.label.setText("●")
             self.label.setStyleSheet("background: transparent; color: #ef4444; font-size: 42px;")
             return
+        if not animated:
+            # Padding differs wildly between sources: an animated GIF frame is
+            # cropped to its artwork (~98% of the canvas), but PokeAPI's egg.png
+            # is a 96x96 image holding a 28x30 egg - 31%. Scaling both to the
+            # same box therefore drew the egg at roughly a THIRD of a Pokemon's
+            # size, and because bench slots are measured from the main's visible
+            # artwork, an egg in the main slot shrank the whole party with it.
+            # Trimming to the artwork puts every static source on the same
+            # footing as an animated one.
+            #
+            # Animated frames are deliberately excluded: each frame of a GIF has
+            # its own bounds, so trimming per frame would make the sprite jitter
+            # as it played.
+            pixmap = _trim_transparent(pixmap)
         self.label.setText("")
         self.label.setStyleSheet("background: transparent;")
         area = self.sprite_area()
