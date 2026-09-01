@@ -51,6 +51,25 @@ PACE_LABELS: dict[str, str] = {
 }
 
 
+# Difficulty ordering, hardest last. Dropping to an easier pace makes every
+# Pokemon already collected far cheaper in hindsight, so it costs a reset;
+# raising difficulty is always free.
+PACE_DIFFICULTY: dict[str, int] = {
+    "casual": 0,
+    "light": 1,
+    "standard": 2,
+}
+
+
+def pace_difficulty(pace: Any) -> int:
+    return PACE_DIFFICULTY[normalize_pace(pace)]
+
+
+def is_pace_downgrade(current: Any, target: Any) -> bool:
+    """True when moving from `current` to `target` makes the game easier."""
+    return pace_difficulty(target) < pace_difficulty(current)
+
+
 def normalize_pace(value: Any) -> str:
     """Coerce a stored pace into a known one, defaulting to standard."""
     if isinstance(value, str) and value in PACE_DIVISORS:

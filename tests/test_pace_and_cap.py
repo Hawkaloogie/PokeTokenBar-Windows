@@ -174,5 +174,48 @@ class PaceInPlayTests(unittest.TestCase):
         self.assertEqual(state.mon.used_at_stage, 40_000_000)
 
 
+
+class PaceDowngradeRuleTests(unittest.TestCase):
+    """Easing the pace costs a reset; raising difficulty is always free."""
+
+    def test_every_easier_move_is_a_downgrade(self) -> None:
+        from poketokenbar_windows.pokemon import is_pace_downgrade
+
+        for current, target in (
+            ("standard", "light"),
+            ("standard", "casual"),
+            ("light", "casual"),
+        ):
+            self.assertTrue(is_pace_downgrade(current, target), f"{current}->{target}")
+
+    def test_every_harder_move_is_free(self) -> None:
+        from poketokenbar_windows.pokemon import is_pace_downgrade
+
+        for current, target in (
+            ("casual", "light"),
+            ("casual", "standard"),
+            ("light", "standard"),
+        ):
+            self.assertFalse(is_pace_downgrade(current, target), f"{current}->{target}")
+
+    def test_staying_put_is_not_a_downgrade(self) -> None:
+        from poketokenbar_windows.pokemon import is_pace_downgrade
+
+        for pace in PACE_DIVISORS:
+            self.assertFalse(is_pace_downgrade(pace, pace))
+
+    def test_difficulty_order_matches_the_divisors(self) -> None:
+        """Harder must always mean more expensive, or the rule is backwards."""
+        from poketokenbar_windows.pokemon import PACE_DIFFICULTY
+
+        ordered = sorted(PACE_DIFFICULTY, key=lambda p: PACE_DIFFICULTY[p])
+        costs = [egg_hatch_threshold(p) for p in ordered]
+        self.assertEqual(costs, sorted(costs), "difficulty order contradicts cost order")
+
+    def test_junk_paces_do_not_read_as_a_downgrade(self) -> None:
+        from poketokenbar_windows.pokemon import is_pace_downgrade
+
+        self.assertFalse(is_pace_downgrade("nonsense", "alsononsense"))
+
 if __name__ == "__main__":
     unittest.main()

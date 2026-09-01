@@ -134,6 +134,7 @@ from .pokemon import (
     PACE_LABELS,
     generation_cap_label,
     generation_label,
+    is_pace_downgrade,
     item_price,
     normalize_generation,
     normalize_pace,
@@ -1373,7 +1374,10 @@ class MainWindow(QMainWindow):
         self.pace_note = QLabel(
             "If you use Claude Code casually, the standard pace makes a single "
             "hatch take months. Casual and Light scale every cost down together "
-            "so progress stays visible. Nothing you have already earned is lost."
+            "so progress stays visible." + (chr(10) * 2)
+            + "Moving to an EASIER pace starts a new game - it would otherwise make "
+            "everything you already collected cheap in hindsight. You are warned "
+            "first. Raising the difficulty is always free and keeps everything."
         )
         self.pace_note.setWordWrap(True)
         self.pace_note.setStyleSheet("color: palette(mid);")
@@ -2573,16 +2577,58 @@ class TrayController(QObject):
         self.floating_pet.set_snap_enabled(bool(enabled))
 
     def _set_pace(self, pace: object) -> None:
+        target = normalize_pace(pace)
+        current = normalize_pace(self.state.pace)
+        if target == current:
+            return
+
+        if is_pace_downgrade(current, target):
+            # Easing the pace would make everything already collected trivially
+            # cheap in hindsight, so it costs the collection. Raising difficulty
+            # is always free and never asks.
+            nl = chr(10)
+            confirm = QMessageBox.warning(
+                self.window,
+                "Easier pace resets your game",
+                f"Moving to an easier pace starts a brand new game.{nl}{nl}"
+                f"Your Pokemon, party, Pokedex, inventory and wallet are all "
+                f"cleared, and the setup questions run again.{nl}{nl}"
+                f"Raising the difficulty later is always free and keeps "
+                f"everything.{nl}{nl}"
+                f"Switch to the easier pace and reset?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                self.window._sync_pace_combo()  # put the picker back
+                return
+            try:
+                with self.state_lock:
+                    fresh = reset_game_state(self.state)
+                    set_pace(fresh, target)
+                    self.store.save(fresh)
+                    self.state = fresh
+            except Exception:  # noqa: BLE001
+                QMessageBox.warning(
+                    self.window, "PokeTokenBar", "The pace could not be changed."
+                )
+                self.window._sync_pace_combo()
+                return
+            self.window.set_state(self.state)
+            self._run_setup()
+            return
+
         try:
             with self.state_lock:
                 candidate = copy.deepcopy(self.state)
-                set_pace(candidate, pace)
+                set_pace(candidate, target)
                 self.store.save(candidate)
                 self.state = candidate
         except Exception:  # noqa: BLE001
             QMessageBox.warning(
                 self.window, "PokeTokenBar", "The pace could not be changed."
             )
+            self.window._sync_pace_combo()
             return
         self.window.set_state(self.state)
         self.refresh()
