@@ -49,8 +49,9 @@ PET_Y_KEY = "floating_pet/position_y"
 PET_SNAP_KEY = "floating_pet/snap_taskbar"
 PET_PARTY_KEY = "floating_pet/show_party"
 
-# Bench companions render beside the main at a fraction of its size, so the
-# main stays the obvious focal point of the row.
+# Bench companions render at this fraction of the MAIN'S VISIBLE ARTWORK, not
+# of its box. Sprites are padded differently, so sizing against the box made
+# benched Pokemon render larger than the main they sit beside.
 BENCH_SCALE = 0.5
 BENCH_GAP_SCALE = 0.06
 
@@ -296,15 +297,32 @@ class FloatingPetWindow(QWidget):
         self._relayout()
         self._render_current_frame()
 
+    def main_visible_height(self) -> int:
+        """Height of the main's actual artwork, ignoring its transparent padding."""
+        pixmap = self.label.pixmap()
+        bounds = _visible_rect(pixmap) if pixmap is not None else None
+        if bounds is None or bounds.height() <= 0:
+            return self.pet_size
+        return bounds.height()
+
     def bench_size(self) -> int:
-        return max(16, round(self.pet_size * BENCH_SCALE))
+        """Target artwork height for a benched companion."""
+        return max(12, round(self.main_visible_height() * BENCH_SCALE))
 
     def _relayout(self) -> None:
         """Size the window to the main sprite plus however many bench slots show."""
         filled = [path for path in self.bench_paths if path is not None]
         gap = max(2, round(self.pet_size * BENCH_GAP_SCALE))
         small = self.bench_size()
-        width = self.pet_size + (len(filled) * (small + gap) if filled else 0)
+        bench_width = 0
+        for label, path in zip(self.bench_labels, self.bench_paths):
+            if path is None:
+                continue
+            pixmap = label.pixmap()
+            bench_width += (
+                pixmap.width() if pixmap and not pixmap.isNull() else small
+            ) + gap
+        width = self.pet_size + bench_width
         area = self.sprite_area()
         lead = self.level_width()
         # Height stays exactly the sprite height so snapping still puts the
@@ -337,9 +355,12 @@ class FloatingPetWindow(QWidget):
             if path is None:
                 label.hide()
                 continue
-            label.setGeometry(x, baseline - small, small, small)
+            pixmap = label.pixmap()
+            box_w = pixmap.width() if pixmap and not pixmap.isNull() else small
+            box_h = pixmap.height() if pixmap and not pixmap.isNull() else small
+            label.setGeometry(x, baseline - box_h, box_w, box_h)
             label.show()
-            x += small + gap
+            x += box_w + gap
 
     def set_bench(self, paths: list[Path | None]) -> None:
         """Show up to five smaller companions beside the main Pokemon."""
@@ -358,16 +379,15 @@ class FloatingPetWindow(QWidget):
             pixmap = QPixmap(str(path)) if path.exists() else QPixmap()
             if pixmap.isNull():
                 pixmap = _pokeball_pixmap(small)
-            # Trim the sprite's padding so the label's bottom IS the feet.
+            # Trim the padding so the label's bottom IS the feet, then scale by
+            # HEIGHT so the companion is reliably half the main's artwork -
+            # bounding by the box let a wide sprite come out taller than the main.
             label.setAlignment(
                 Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom
             )
             label.setPixmap(
-                _trim_transparent(pixmap).scaled(
-                    small,
-                    small,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
+                _trim_transparent(pixmap).scaledToHeight(
+                    small, Qt.TransformationMode.SmoothTransformation
                 )
             )
         for label in self.bench_labels[len(self.bench_paths):]:

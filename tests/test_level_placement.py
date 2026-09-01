@@ -173,5 +173,70 @@ class SnapHeightTests(unittest.TestCase):
         )
 
 
+class BenchProportionTests(unittest.TestCase):
+    """Benched companions must render SMALLER than the main, always.
+
+    Regression: sizing the bench against the main's padded box let trimmed
+    bench sprites render at 114% of the main's actual artwork - bigger, not
+    smaller - because sprites pad differently. Size is now measured against
+    the main's visible artwork.
+    """
+
+    MAINS = (4, 25, 143, 1)
+    BENCH = (25, 1, 7, 133, 143)
+
+    def setUp(self) -> None:
+        self.app = _app()
+        self.api = PokeAPIClient(cache_dir())
+
+    def _pet(self, main: int, size: int = 96) -> FloatingPetWindow:
+        pet = FloatingPetWindow(size)
+        pet.show()
+        pet.set_sprite(self.api.sprite_path(main, animated=False), is_egg=False)
+        pet.set_level("Lv. 24")
+        pet.set_bench([self.api.sprite_path(b, animated=False) for b in self.BENCH])
+        self.app.processEvents()
+        return pet
+
+    def _artwork(self, pixmap):
+        from poketokenbar_windows.floating_pet import _visible_rect
+        return _visible_rect(pixmap)
+
+    def test_every_bench_pokemon_is_smaller_than_the_main(self) -> None:
+        for main in self.MAINS:
+            pet = self._pet(main)
+            main_h = self._artwork(pet.label.pixmap()).height()
+            for index, label in enumerate(pet.bench_labels[:len(self.BENCH)]):
+                bench_h = self._artwork(label.pixmap()).height()
+                self.assertLess(
+                    bench_h, main_h,
+                    f"bench {index} beside main #{main} was {bench_h}px vs "
+                    f"main {main_h}px - not smaller",
+                )
+
+    def test_the_bench_lands_near_the_intended_half_size(self) -> None:
+        from poketokenbar_windows.floating_pet import BENCH_SCALE
+
+        for main in self.MAINS:
+            pet = self._pet(main)
+            main_h = self._artwork(pet.label.pixmap()).height()
+            for label in pet.bench_labels[:len(self.BENCH)]:
+                ratio = self._artwork(label.pixmap()).height() / main_h
+                self.assertAlmostEqual(ratio, BENCH_SCALE, delta=0.08)
+
+    def test_it_holds_at_every_pet_size(self) -> None:
+        for size in (48, 96, 160, 192):
+            pet = self._pet(4, size=size)
+            main_h = self._artwork(pet.label.pixmap()).height()
+            for label in pet.bench_labels[:len(self.BENCH)]:
+                self.assertLess(self._artwork(label.pixmap()).height(), main_h)
+
+    def test_every_bench_pokemon_stands_on_the_mains_feet(self) -> None:
+        for main in self.MAINS:
+            pet = self._pet(main)
+            for label in pet.bench_labels[:len(self.BENCH)]:
+                self.assertEqual(label.geometry().bottom() + 1, pet.main_feet_y())
+
+
 if __name__ == "__main__":
     unittest.main()
