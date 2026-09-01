@@ -1312,28 +1312,26 @@ class MainWindow(QMainWindow):
 
     def _favourite_star(self, catch_index: int, favourite: bool) -> QPushButton:
         """Star toggle bound to a Pokedex entry, usable from any view."""
-        # Not checkable: a checkable button renders Qt's own selected
-        # highlight over the colour, which reads as a smudge rather than a
-        # state. The fill is painted explicitly instead.
+        # The STAR itself carries the state: a solid amber glyph when
+        # favourited, a hollow outline when not. No box, no background, no
+        # checked highlight - there was never a box here to begin with.
         star = QPushButton("★" if favourite else "☆")
-        star.setFixedSize(34, 28)
+        star.setFlat(True)
+        star.setCursor(Qt.CursorShape.PointingHandCursor)
+        star.setFixedSize(30, 26)
         star.setToolTip(
             "Favourited - never offered in trades and can never be traded away"
             if favourite else
             "Favourite this Pokemon so it can never be traded away"
         )
-        if favourite:
-            star.setStyleSheet(
-                "QPushButton { background: #f59e0b; color: #1f2430; border: none; "
-                "border-radius: 4px; font-size: 16px; font-weight: bold; } "
-                "QPushButton:hover { background: #d97706; }"
-            )
-        else:
-            star.setStyleSheet(
-                "QPushButton { background: rgba(127, 140, 160, 0.22); color: palette(mid); "
-                "border: none; border-radius: 4px; font-size: 16px; } "
-                "QPushButton:hover { background: rgba(245, 158, 11, 0.30); color: #f59e0b; }"
-            )
+        colour = "#f59e0b" if favourite else "palette(mid)"
+        star.setStyleSheet(
+            "QPushButton { background: transparent; border: none; padding: 0; "
+            f"font-size: 19px; color: {colour}; " + "}"
+            "QPushButton:hover { color: #f59e0b; }"
+            "QPushButton:pressed { background: transparent; }"
+            "QPushButton:disabled { color: palette(mid); }"
+        )
         if catch_index >= 0:
             star.clicked.connect(
                 lambda _checked=False, index=catch_index, value=not favourite:
@@ -1794,7 +1792,9 @@ class MainWindow(QMainWindow):
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
         self.generation_combo.setMinimumContentsLength(16)
-        self.generation_combo.setMinimumWidth(240)
+        self.generation_combo.setMinimumWidth(
+            max(240, self.generation_combo.minimumSizeHint().width())
+        )
         self._settings_row(
             hatch, "Highest generation", self.generation_combo,
             "A cap, not a filter: picking Gen 3 keeps Kanto and Johto in the pool "
@@ -1820,7 +1820,9 @@ class MainWindow(QMainWindow):
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
         self.pace_combo.setMinimumContentsLength(16)
-        self.pace_combo.setMinimumWidth(240)
+        self.pace_combo.setMinimumWidth(
+            max(240, self.pace_combo.minimumSizeHint().width())
+        )
         self._settings_row(
             pace, "Token pace", self.pace_combo,
             "At the standard pace a casual Claude user waits months for one hatch. "
@@ -1957,10 +1959,17 @@ class MainWindow(QMainWindow):
             button.setProperty(f"{prop}Segment", True)
             button.setCheckable(True)
             button.setProperty(prop, mode)
-            button.setFixedWidth(112)
+            # Fixed widths clipped the labels ('Date & time' needs 146px, not
+            # 112). Size to the text with a floor so the pair stays even.
+            button.setMinimumWidth(
+                max(112, button.fontMetrics().horizontalAdvance(button.text()) + 34)
+            )
             button.setToolTip(tip)
             group.addButton(button)
             layout.addWidget(button)
+        widest = max(b.minimumWidth() for b, *_ in buttons)
+        for button, *_ in buttons:
+            button.setMinimumWidth(widest)
         first, last = buttons[0][2], buttons[-1][2]
         frame.setStyleSheet(
             f"QPushButton[{prop}Segment='true'] {{"
