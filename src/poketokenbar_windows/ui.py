@@ -1037,7 +1037,29 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return root
 
-    def _render_party(self) -> None:
+    def _party_signature(self) -> tuple:
+        """What the Party tab actually depends on.
+
+        Rebuilding the grid on every refresh would destroy and recreate the
+        slot pickers underneath the user - including an open dropdown - so the
+        rebuild is gated on this changing.
+        """
+        mon = self.state.mon
+        return (
+            (mon.current_id, mon.is_shiny, mon.nature) if mon else None,
+            tuple(
+                (m.current_id, m.is_shiny, m.nature) if m else None
+                for m in (self.state.party or [])
+            ),
+            tuple((c.species_id, c.is_shiny, c.nature) for c in self.state.catches),
+            self.state.language,
+        )
+
+    def _render_party(self, force: bool = False) -> None:
+        signature = self._party_signature()
+        if not force and signature == getattr(self, "_party_rendered", object()):
+            return
+        self._party_rendered = signature
         _clear_layout(self.party_grid)
         members = party_members(self.state)
         main = members[0]
@@ -2015,6 +2037,7 @@ class MainWindow(QMainWindow):
             )
         self._render_collection()
         self._render_bag_shop()
+        self._render_party()
         self.refresh_button.setEnabled(True)
         stamp = snapshot.scanned_at.astimezone().strftime("%H:%M") if snapshot.scanned_at else "now"
         self.refresh_status.setText(("Updated with warnings · " if result.scan_errors else "Updated · ") + stamp)
