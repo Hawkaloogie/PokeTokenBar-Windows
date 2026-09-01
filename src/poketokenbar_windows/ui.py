@@ -2530,7 +2530,6 @@ class TrayController(QObject):
         self.countdown_timer.setInterval(30_000)
         self.countdown_timer.timeout.connect(self._tick_countdown)
         self.countdown_timer.start()
-        self.floating_pet.pet.evolution_finished.connect(self._finish_evolution)
         self.window.evolve_requested.connect(self.start_evolution)
         QTimer.singleShot(0, self.run_setup_if_needed)
         self._apply_theme()
@@ -2567,6 +2566,7 @@ class TrayController(QObject):
             display_mode=self.limit_display_mode,
             time_mode=self.limit_time_mode,
         )
+        self.floating_pet.pet.evolution_finished.connect(self._finish_evolution)
         self.floating_pet.enabled_changed.connect(self._sync_pet_visibility)
         self.floating_pet.size_changed.connect(
             lambda size: self.window.sync_floating_pet_settings(size=size)

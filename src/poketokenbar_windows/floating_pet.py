@@ -307,39 +307,6 @@ class FloatingPetWindow(QWidget):
             label.show()
             x += small + gap
 
-    def set_level(self, text: str) -> None:
-        self.pet.set_level(text)
-
-    def show_evolution_prompt(self, text: str) -> None:
-        """A prompt that stays until the player acts - not a timed alert.
-
-        The point of gating evolution is that they get to watch it, so this must
-        not quietly expire the way limit alerts do.
-        """
-        self.bubble_timer.stop()
-        self.hover.hide()
-        self.bubble.set_alert(
-            PetAlert(
-                key="evolution-ready",
-                title="Ready to evolve!",
-                body=text,
-                severity="info",
-                tier=0,
-                priority=0.0,
-            )
-        )
-        self._position_auxiliary_windows()
-        self.bubble.show()
-        self.bubble.raise_()
-
-    def hide_evolution_prompt(self) -> None:
-        self.bubble_timer.stop()
-        self.bubble.hide()
-
-    def play_evolution(self, from_path: Path | None, to_path: Path | None) -> None:
-        self.hide_evolution_prompt()
-        self.pet.play_evolution(from_path, to_path)
-
     def set_bench(self, paths: list[Path | None]) -> None:
         """Show up to five smaller companions beside the main Pokemon."""
         self.bench_paths = list(paths)
@@ -905,6 +872,39 @@ class FloatingPetController(QObject):
         if screen is None:
             return target
         return snap_pet_position(target[0], self.size, screen, width=width)
+
+    def set_level(self, text: str) -> None:
+        self.pet.set_level(text)
+
+    def show_evolution_prompt(self, text: str) -> None:
+        """A prompt that stays until the player acts - not a timed alert.
+
+        The point of gating evolution is that they get to watch it, so this must
+        not quietly expire the way limit alerts do.
+        """
+        self.bubble_timer.stop()
+        self.hover.hide()
+        self.bubble.set_alert(
+            PetAlert(
+                key="evolution-ready",
+                title="Ready to evolve!",
+                body=text,
+                severity="info",
+                tier=0,
+                priority=0.0,
+            )
+        )
+        self._position_auxiliary_windows()
+        self.bubble.show()
+        self.bubble.raise_()
+
+    def hide_evolution_prompt(self) -> None:
+        self.bubble_timer.stop()
+        self.bubble.hide()
+
+    def play_evolution(self, from_path: Path | None, to_path: Path | None) -> None:
+        self.hide_evolution_prompt()
+        self.pet.play_evolution(from_path, to_path)
 
     def set_bench(self, paths: list[Path | None]) -> None:
         """Update the smaller companions shown beside the main Pokemon.
