@@ -59,6 +59,11 @@ DARK = {
     "danger": "#f85149",
     "favourite": "#f0b429",
     "tooltip_bg": "#333333",
+    # A tooltip carries its OWN text and border colours. Reusing "text" broke
+    # the moment a palette inverted its tooltip: light mode drew #1b1b1d text
+    # on a #1b1b1d background, so every tooltip popped up empty.
+    "tooltip_text": "#f2f2f2",
+    "tooltip_border": "#4d4d4d",
 }
 
 LIGHT = {
@@ -77,7 +82,11 @@ LIGHT = {
     "warning": "#b45309",
     "danger": "#dc2626",
     "favourite": "#b45309",
+    # Light mode inverts its tooltip on purpose - a dark chip reads as a
+    # transient popup rather than another white card.
     "tooltip_bg": "#1b1b1d",
+    "tooltip_text": "#f5f5f7",
+    "tooltip_border": "#3a3a3d",
 }
 
 
@@ -125,8 +134,8 @@ def build_stylesheet(mode: str) -> str:
         QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; }}
         QToolTip {{
             background: {c['tooltip_bg']};
-            color: {c['text']};
-            border: 1px solid {c['border']};
+            color: {c['tooltip_text']};
+            border: 1px solid {c['tooltip_border']};
             border-radius: {RADIUS_CONTROL}px;
             padding: {SPACE_XS}px {SPACE_SM}px;
         }}
@@ -341,7 +350,7 @@ def apply_base_palette(app, mode: str) -> None:
         (role.AlternateBase, "surface_alt"), (role.Button, "surface_alt"),
         (role.ToolTipBase, "tooltip_bg"), (role.Highlight, "accent"),
         (role.WindowText, "text"), (role.Text, "text"),
-        (role.ButtonText, "text"), (role.ToolTipText, "text"),
+        (role.ButtonText, "text"), (role.ToolTipText, "tooltip_text"),
         (role.HighlightedText, "accent_text"), (role.PlaceholderText, "text_faint"),
         (role.Mid, "border"), (role.Dark, "border_strong"),
         (role.Light, "surface_alt"), (role.Midlight, "surface_alt"),
