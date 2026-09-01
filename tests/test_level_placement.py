@@ -138,11 +138,17 @@ class LevelBesideSpriteTests(unittest.TestCase):
             pet.label.geometry().right(),
         )
 
-    def test_the_bench_still_stands_on_the_sprite_baseline(self) -> None:
+    def test_the_bench_stands_on_the_mains_feet_not_its_box(self) -> None:
+        """Sprites are padded, so box-bottom alignment leaves the bench too low."""
         pet = self._pet(96)
         pet.set_bench([self.api.sprite_path(1, animated=False)] + [None] * 4)
         self.app.processEvents()
-        self.assertEqual(pet.bench_labels[0].geometry().bottom() + 1, pet.sprite_area())
+        self.assertEqual(pet.bench_labels[0].geometry().bottom() + 1, pet.main_feet_y())
+
+    def test_the_feet_line_is_inside_the_sprite_box(self) -> None:
+        pet = self._pet(96)
+        self.assertGreater(pet.main_feet_y(), 0)
+        self.assertLessEqual(pet.main_feet_y(), pet.sprite_area())
 
 
 class SnapHeightTests(unittest.TestCase):

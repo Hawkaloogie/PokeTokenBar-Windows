@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QStackedWidget,
     QSlider,
     QSpinBox,
     QSystemTrayIcon,
@@ -100,6 +101,7 @@ from .floating_pet import (
     MENU_REFRESH_LABEL,
     PET_ALERTS_KEY,
     PET_ENABLED_KEY,
+    PET_PARTY_KEY,
     PET_SIZE_KEY,
     PET_SNAP_KEY,
     AnimatedSpriteFrameStabilizer,
@@ -827,6 +829,7 @@ class MainWindow(QMainWindow):
     party_assign_requested = Signal(int, object)
     reset_requested = Signal()
     pace_changed = Signal(object)
+    pet_party_changed = Signal(bool)
     evolve_requested = Signal()
     preferences_changed = Signal()
     representative_changed = Signal(object)
@@ -1307,101 +1310,195 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return root
 
+    # ------------------------------------------------------------------
+    # Settings
+    #
+    # One long scroll of group boxes was replaced by a category sidebar and a
+    # stacked content pane, with the Save/Discard footer always visible. Every
+    # control, object name and signal is unchanged - only where they live and
+    # how they read has changed.
+    # ------------------------------------------------------------------
+
+    SETTINGS_STYLE = """
+        QListWidget#SettingsNav {
+            background: transparent;
+            border: none;
+            outline: 0;
+            padding: 6px 0;
+        }
+        QListWidget#SettingsNav::item {
+            padding: 9px 12px;
+            margin: 2px 6px;
+            border-radius: 8px;
+            color: palette(text);
+        }
+        QListWidget#SettingsNav::item:selected {
+            background: #2563eb;
+            color: white;
+            font-weight: 600;
+        }
+        QListWidget#SettingsNav::item:hover:!selected {
+            background: rgba(127, 140, 160, 0.18);
+        }
+        QFrame#SettingsCard {
+            border: 1px solid palette(mid);
+            border-radius: 10px;
+        }
+        QFrame#SettingsDivider {
+            background: palette(mid);
+            max-height: 1px;
+            border: none;
+        }
+        QFrame#SettingsFooter {
+            border-top: 1px solid palette(mid);
+        }
+    """
+
+    def _settings_title(self, text: str, *, size_delta: int = 4) -> QLabel:
+        label = QLabel(text)
+        font = label.font()
+        font.setPointSize(font.pointSize() + size_delta)
+        font.setBold(True)
+        label.setFont(font)
+        return label
+
+    def _settings_caption(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setStyleSheet("color: palette(mid);")
+        return label
+
+    def _settings_page(self, title: str, subtitle: str):
+        """A scrollable page with a heading. Returns (page, content layout)."""
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(20, 18, 20, 18)
+        outer.setSpacing(6)
+        outer.addWidget(self._settings_title(title))
+        if subtitle:
+            outer.addWidget(self._settings_caption(subtitle))
+        outer.addSpacing(8)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        holder = QWidget()
+        content = QVBoxLayout(holder)
+        content.setContentsMargins(0, 0, 6, 0)
+        content.setSpacing(14)
+        scroll.setWidget(holder)
+        outer.addWidget(scroll, 1)
+        return page, content
+
+    def _settings_card(self, layout, title: str, description: str = ""):
+        """A bordered group. Returns the layout to put controls into."""
+        card = QFrame()
+        card.setObjectName("SettingsCard")
+        inner = QVBoxLayout(card)
+        inner.setContentsMargins(16, 14, 16, 14)
+        inner.setSpacing(10)
+        if title:
+            heading = self._settings_title(title, size_delta=1)
+            heading.setStyleSheet("border: none;")
+            inner.addWidget(heading)
+        if description:
+            note = self._settings_caption(description)
+            note.setStyleSheet("color: palette(mid); border: none;")
+            inner.addWidget(note)
+        layout.addWidget(card)
+        return inner
+
+    def _settings_row(self, layout, label: str, control, description: str = "") -> None:
+        """A labelled control with the explanation directly under it."""
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        caption = QLabel(label)
+        caption.setStyleSheet("border: none;")
+        row.addWidget(caption)
+        row.addStretch(1)
+        row.addWidget(control)
+        layout.addLayout(row)
+        if description:
+            note = self._settings_caption(description)
+            note.setStyleSheet("color: palette(mid); border: none;")
+            layout.addWidget(note)
+
     def _build_settings(self) -> QWidget:
         root = QWidget()
-        layout = QVBoxLayout(root)
-        general = QGroupBox("General")
-        general_layout = QVBoxLayout(general)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Refresh interval"))
-        self.interval_combo = _no_wheel(QComboBox())
-        for minutes in (1, 2, 5, 10, 15):
-            self.interval_combo.addItem(f"{minutes} min", minutes)
-        current = int(self.settings.value("refresh_minutes", 5))
-        idx = self.interval_combo.findData(current)
-        self.interval_combo.setCurrentIndex(max(0, idx))
-        self.interval_combo.currentIndexChanged.connect(self._save_interval)
-        row.addWidget(self.interval_combo)
-        row.addStretch(1)
-        general_layout.addLayout(row)
+        root.setStyleSheet(self.SETTINGS_STYLE)
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        self.autostart_check = QCheckBox("Start automatically after login")
-        self.autostart_check.setChecked(_autostart_enabled())
-        self.autostart_check.toggled.connect(self._toggle_autostart)
-        general_layout.addWidget(self.autostart_check)
-        language_row = QHBoxLayout()
-        language_row.addWidget(QLabel("Pokémon names"))
-        self.language_combo = _no_wheel(QComboBox())
-        for label, code in (("English", "en"), ("Español", "es"), ("Français", "fr"), ("日本語", "ja")):
-            self.language_combo.addItem(label, code)
-        language_index = self.language_combo.findData(self.state.language)
-        self.language_combo.setCurrentIndex(max(0, language_index))
-        self.language_combo.currentIndexChanged.connect(
-            lambda: self.language_changed.emit(str(self.language_combo.currentData()))
-        )
-        language_row.addWidget(self.language_combo)
-        language_row.addStretch(1)
-        general_layout.addLayout(language_row)
-        layout.addWidget(general)
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
 
-        desktop = QGroupBox("Desktop pet")
-        desktop_layout = QVBoxLayout(desktop)
-        self.pet_check = QCheckBox("Show companion on the desktop")
-        self.pet_check.setChecked(
-            settings_bool(self.settings.value(PET_ENABLED_KEY, False), False)
-        )
-        self.pet_check.toggled.connect(self._save_pet_visibility)
-        desktop_layout.addWidget(self.pet_check)
-        pet_size_row = QHBoxLayout()
-        pet_size_row.addWidget(QLabel("Size"))
-        self.pet_size_slider = _no_wheel(QSlider(Qt.Orientation.Horizontal))
-        self.pet_size_slider.setRange(PET_MIN_SIZE, PET_MAX_SIZE)
-        self.pet_size_slider.setSingleStep(PET_SIZE_STEP)
-        self.pet_size_slider.setPageStep(PET_SIZE_STEP)
-        self.pet_size_slider.setTickInterval(PET_SIZE_STEP)
-        self.pet_size_slider.setValue(
-            normalize_pet_size(self.settings.value(PET_SIZE_KEY, PET_DEFAULT_SIZE))
-        )
-        self.pet_size_slider.valueChanged.connect(self._save_pet_size)
-        pet_size_row.addWidget(self.pet_size_slider, 1)
-        self.pet_size_label = QLabel(f"{self.pet_size_slider.value()} px")
-        pet_size_row.addWidget(self.pet_size_label)
-        desktop_layout.addLayout(pet_size_row)
-        self.pet_snap_check = QCheckBox("Snap above the taskbar")
-        self.pet_snap_check.setToolTip(
-            "Dock the companion to the bottom of the screen work area, just above "
-            "the taskbar on whichever edge it sits. Drag still moves it sideways."
-        )
-        self.pet_snap_check.setChecked(
-            settings_bool(self.settings.value(PET_SNAP_KEY, False), False)
-        )
-        self.pet_snap_check.toggled.connect(self._save_pet_snap)
-        desktop_layout.addWidget(self.pet_snap_check)
-        self.pet_alerts_check = self._setting_check(
-            "Show transient usage and full-reset bubbles", PET_ALERTS_KEY, True
-        )
-        desktop_layout.addWidget(self.pet_alerts_check)
-        self._set_pet_controls_enabled(self.pet_check.isChecked())
-        layout.addWidget(desktop)
+        self.settings_nav = QListWidget()
+        self.settings_nav.setObjectName("SettingsNav")
+        self.settings_nav.setFixedWidth(178)
+        self.settings_nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body.addWidget(self.settings_nav)
 
-        danger_group = QGroupBox("Start over")
-        danger_layout = QVBoxLayout(danger_group)
-        danger_note = QLabel(
-            "Resetting clears your Pokemon, party, Pokedex and wallet, then asks "
-            "the setup questions again. Tokens already spent are not re-credited."
-        )
-        danger_note.setWordWrap(True)
-        danger_note.setStyleSheet("color: palette(mid);")
-        danger_layout.addWidget(danger_note)
-        self.reset_button = QPushButton("Reset app and start over...")
-        self.reset_button.setToolTip("Wipe this save and re-run the setup questions")
-        self.reset_button.clicked.connect(self.reset_requested.emit)
-        danger_layout.addWidget(self.reset_button)
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.VLine)
+        divider.setStyleSheet("color: palette(mid);")
+        body.addWidget(divider)
 
-        hatch_group = QGroupBox("Hatching")
-        hatch_layout = QVBoxLayout(hatch_group)
-        generation_row = QHBoxLayout()
-        generation_row.addWidget(QLabel("Highest generation"))
+        self.settings_stack = QStackedWidget()
+        body.addWidget(self.settings_stack, 1)
+        outer.addLayout(body, 1)
+
+        for name, builder in (
+            ("Game", self._settings_page_game),
+            ("Desktop pet", self._settings_page_desktop),
+            ("Limits", self._settings_page_limits),
+            ("Tray", self._settings_page_tray),
+            ("General", self._settings_page_general),
+            ("Advanced", self._settings_page_advanced),
+        ):
+            self.settings_nav.addItem(name)
+            self.settings_stack.addWidget(builder())
+        self.settings_nav.currentRowChanged.connect(self.settings_stack.setCurrentIndex)
+        self.settings_nav.setCurrentRow(0)
+
+        # The footer stays put so a staged change is never scrolled out of sight.
+        footer = QFrame()
+        footer.setObjectName("SettingsFooter")
+        save_row = QHBoxLayout(footer)
+        save_row.setContentsMargins(20, 12, 20, 12)
+        self.settings_dirty_label = QLabel("")
+        self.settings_dirty_label.setStyleSheet("color: #d97706; border: none;")
+        save_row.addWidget(self.settings_dirty_label)
+        save_row.addStretch(1)
+        self.settings_revert_button = QPushButton("Discard")
+        self.settings_revert_button.setToolTip("Put these back the way they were")
+        self.settings_revert_button.clicked.connect(self._revert_staged_settings)
+        save_row.addWidget(self.settings_revert_button)
+        self.settings_save_button = QPushButton("Save changes")
+        self.settings_save_button.setToolTip(
+            "Apply the generation and pace choices"
+        )
+        self.settings_save_button.setStyleSheet(
+            "QPushButton { background: #2563eb; color: white; border: none; "
+            "border-radius: 7px; padding: 7px 16px; font-weight: 600; } "
+            "QPushButton:disabled { background: rgba(127, 140, 160, 0.35); color: "
+            "rgba(255, 255, 255, 0.6); }"
+        )
+        self.settings_save_button.clicked.connect(self._commit_staged_settings)
+        save_row.addWidget(self.settings_save_button)
+        outer.addWidget(footer)
+        self._update_settings_dirty()
+        return root
+
+    def _settings_page_game(self) -> QWidget:
+        page, content = self._settings_page(
+            "Game",
+            "How your companions hatch and grow. These two stage until you press "
+            "Save, so a stray scroll cannot change your game.",
+        )
+
+        hatch = self._settings_card(content, "Hatching")
         self.generation_combo = _no_wheel(QComboBox())
         self.generation_combo.addItem(generation_cap_label(None), None)
         for number, _region, _low, _high in GENERATIONS:
@@ -1414,22 +1511,17 @@ class MainWindow(QMainWindow):
         self.generation_combo.currentIndexChanged.connect(
             lambda _index: self._mark_settings_dirty()
         )
-        generation_row.addWidget(self.generation_combo, 1)
-        hatch_layout.addLayout(generation_row)
-        self.generation_note = QLabel(
-            "This is a cap: picking Gen 3 keeps Kanto and Johto in the pool too. "
-            "Only generations 1-5 exist here - the animated sprite set this app "
-            "uses does not cover later ones."
+        self.generation_combo.setMinimumWidth(240)
+        self._settings_row(
+            hatch, "Highest generation", self.generation_combo,
+            "A cap, not a filter: picking Gen 3 keeps Kanto and Johto in the pool "
+            "too. Only generations 1-5 exist here, because the animated sprite set "
+            "this app uses does not cover later ones.",
         )
-        self.generation_note.setWordWrap(True)
-        self.generation_note.setStyleSheet("color: palette(mid);")
-        hatch_layout.addWidget(self.generation_note)
-        layout.addWidget(hatch_group)
+        self.generation_note = self._settings_caption("")
+        self.generation_note.hide()
 
-        pace_group = QGroupBox("Pace")
-        pace_layout = QVBoxLayout(pace_group)
-        pace_row = QHBoxLayout()
-        pace_row.addWidget(QLabel("Token pace"))
+        pace = self._settings_card(content, "Pace")
         self.pace_combo = _no_wheel(QComboBox())
         for key in ("standard", "light", "casual"):
             self.pace_combo.addItem(PACE_LABELS[key], key)
@@ -1441,191 +1533,204 @@ class MainWindow(QMainWindow):
         self.pace_combo.currentIndexChanged.connect(
             lambda _index: self._mark_settings_dirty()
         )
-        pace_row.addWidget(self.pace_combo, 1)
-        pace_layout.addLayout(pace_row)
-        self.pace_note = QLabel(
-            "If you use Claude Code casually, the standard pace makes a single "
-            "hatch take months. Casual and Light scale every cost down together "
-            "so progress stays visible." + (chr(10) * 2)
-            + "Moving to an EASIER pace starts a new game - it would otherwise make "
+        self.pace_combo.setMinimumWidth(240)
+        self._settings_row(
+            pace, "Token pace", self.pace_combo,
+            "At the standard pace a casual Claude user waits months for one hatch. "
+            "Casual and Light scale every cost down together so progress stays "
+            "visible.",
+        )
+        self.pace_note = self._settings_caption(
+            "Moving to an EASIER pace starts a new game - it would otherwise make "
             "everything you already collected cheap in hindsight. You are warned "
             "first. Raising the difficulty is always free and keeps everything."
         )
-        self.pace_note.setWordWrap(True)
-        self.pace_note.setStyleSheet("color: palette(mid);")
-        pace_layout.addWidget(self.pace_note)
-        layout.addWidget(pace_group)
+        self.pace_note.setStyleSheet("color: #d97706; border: none;")
+        pace.addWidget(self.pace_note)
 
-        save_row = QHBoxLayout()
-        self.settings_dirty_label = QLabel("")
-        self.settings_dirty_label.setStyleSheet("color: #d97706;")
-        save_row.addWidget(self.settings_dirty_label)
-        save_row.addStretch(1)
-        self.settings_revert_button = QPushButton("Discard")
-        self.settings_revert_button.setToolTip("Put these back the way they were")
-        self.settings_revert_button.clicked.connect(self._revert_staged_settings)
-        save_row.addWidget(self.settings_revert_button)
-        self.settings_save_button = QPushButton("Save changes")
-        self.settings_save_button.setToolTip(
-            "Apply the generation and pace choices above"
+        danger = self._settings_card(
+            content, "Start over",
+            "Clears your Pokemon, party, Pokedex, inventory and wallet, then asks "
+            "the setup questions again. Tokens already spent are not re-credited.",
         )
-        self.settings_save_button.clicked.connect(self._commit_staged_settings)
-        save_row.addWidget(self.settings_save_button)
-        layout.addLayout(save_row)
-        self._update_settings_dirty()
+        self.reset_button = QPushButton("Reset app and start over...")
+        self.reset_button.setToolTip("Wipe this save and re-run the setup questions")
+        self.reset_button.setStyleSheet(
+            "QPushButton { border: 1px solid #dc2626; color: #dc2626; "
+            "border-radius: 7px; padding: 7px 14px; font-weight: 600; } "
+            "QPushButton:hover { background: rgba(220, 38, 38, 0.12); }"
+        )
+        self.reset_button.clicked.connect(self.reset_requested.emit)
+        reset_row = QHBoxLayout()
+        reset_row.addWidget(self.reset_button)
+        reset_row.addStretch(1)
+        danger.addLayout(reset_row)
 
-        layout.addWidget(danger_group)
+        content.addStretch(1)
+        return page
 
-        tray_group = QGroupBox("Tray tooltip")
-        tray_layout = QVBoxLayout(tray_group)
-        self.tray_tokens_check = self._setting_check("Show today's tokens", "tray_show_tokens", True)
-        self.tray_cost_check = self._setting_check("Show estimated cost", "tray_show_cost", False)
-        self.tray_limit_check = self._setting_check("Show highest limit percentage", "tray_show_limit", True)
-        for check in (self.tray_tokens_check, self.tray_cost_check, self.tray_limit_check):
-            tray_layout.addWidget(check)
-        layout.addWidget(tray_group)
+    def _settings_page_desktop(self) -> QWidget:
+        page, content = self._settings_page(
+            "Desktop pet",
+            "The companion that lives on your desktop, beside your taskbar.",
+        )
+        card = self._settings_card(content, "")
+        self.pet_check = QCheckBox("Show companion on the desktop")
+        self.pet_check.setChecked(
+            settings_bool(self.settings.value(PET_ENABLED_KEY, False), False)
+        )
+        self.pet_check.toggled.connect(self._save_pet_visibility)
+        self.pet_check.setStyleSheet("border: none;")
+        card.addWidget(self.pet_check)
 
-        limits_group = QGroupBox("Limits")
-        limits_layout = QVBoxLayout(limits_group)
-        display_row = QHBoxLayout()
-        display_row.addWidget(QLabel("Display official limits as"))
+        self.pet_size_slider = _no_wheel(QSlider(Qt.Orientation.Horizontal))
+        self.pet_size_slider.setRange(PET_MIN_SIZE, PET_MAX_SIZE)
+        self.pet_size_slider.setSingleStep(PET_SIZE_STEP)
+        self.pet_size_slider.setPageStep(PET_SIZE_STEP)
+        self.pet_size_slider.setTickInterval(PET_SIZE_STEP)
+        self.pet_size_slider.setValue(
+            normalize_pet_size(self.settings.value(PET_SIZE_KEY, PET_DEFAULT_SIZE))
+        )
+        self.pet_size_slider.valueChanged.connect(self._save_pet_size)
+        self.pet_size_slider.setMinimumWidth(200)
+        self.pet_size_label = QLabel(f"{self.pet_size_slider.value()} px")
+        self.pet_size_label.setStyleSheet("border: none;")
+        size_holder = QWidget()
+        size_holder.setStyleSheet("border: none;")
+        size_row = QHBoxLayout(size_holder)
+        size_row.setContentsMargins(0, 0, 0, 0)
+        size_row.addWidget(self.pet_size_slider, 1)
+        size_row.addWidget(self.pet_size_label)
+        self._settings_row(card, "Size", size_holder)
+
+        self.pet_snap_check = QCheckBox("Snap above the taskbar")
+        self.pet_snap_check.setToolTip(
+            "Dock the companion to the bottom of the screen work area, just above "
+            "the taskbar on whichever edge it sits. Drag still moves it sideways."
+        )
+        self.pet_snap_check.setChecked(
+            settings_bool(self.settings.value(PET_SNAP_KEY, False), False)
+        )
+        self.pet_snap_check.toggled.connect(self._save_pet_snap)
+        self.pet_snap_check.setStyleSheet("border: none;")
+        card.addWidget(self.pet_snap_check)
+
+        self.pet_party_check = QCheckBox("Show your whole party")
+        self.pet_party_check.setToolTip(
+            "Off shows only your main Pokemon; on lines the bench up beside it."
+        )
+        self.pet_party_check.setChecked(
+            settings_bool(self.settings.value(PET_PARTY_KEY, True), True)
+        )
+        self.pet_party_check.toggled.connect(self.pet_party_changed.emit)
+        self.pet_party_check.setStyleSheet("border: none;")
+        card.addWidget(self.pet_party_check)
+
+        self.pet_alerts_check = self._setting_check(
+            "Show transient usage and full-reset bubbles", PET_ALERTS_KEY, True
+        )
+        self.pet_alerts_check.setStyleSheet("border: none;")
+        card.addWidget(self.pet_alerts_check)
+        self._set_pet_controls_enabled(self.pet_check.isChecked())
+
+        content.addStretch(1)
+        return page
+
+    def _segmented(self, buttons, object_prefix: str, prop: str):
+        """A two-button segmented control, styled as one pill."""
+        frame = QFrame()
+        frame.setObjectName(f"{object_prefix}Toggle")
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        group = QButtonGroup(frame)
+        group.setExclusive(True)
+        for button, mode, name, tip in buttons:
+            button.setObjectName(name)
+            button.setProperty(f"{prop}Segment", True)
+            button.setCheckable(True)
+            button.setProperty(prop, mode)
+            button.setFixedWidth(112)
+            button.setToolTip(tip)
+            group.addButton(button)
+            layout.addWidget(button)
+        first, last = buttons[0][2], buttons[-1][2]
+        frame.setStyleSheet(
+            f"QPushButton[{prop}Segment='true'] {{"
+            "  border: 1px solid palette(mid); padding: 6px 12px; margin: 0;"
+            "  background: palette(button);"
+            "}"
+            f"QPushButton#{first} {{"
+            "  border-top-left-radius: 7px; border-bottom-left-radius: 7px;"
+            "  border-right-width: 0;"
+            "}"
+            f"QPushButton#{last} {{"
+            "  border-top-right-radius: 7px; border-bottom-right-radius: 7px;"
+            "}"
+            f"QPushButton[{prop}Segment='true']:checked {{"
+            "  background: #2563eb; color: white; border-color: #2563eb;"
+            "  font-weight: 600;"
+            "}"
+        )
+        return frame, group
+
+    def _settings_page_limits(self) -> QWidget:
+        page, content = self._settings_page(
+            "Limits",
+            "How your Claude and Codex usage limits are shown, and when you are warned.",
+        )
+
+        display = self._settings_card(content, "Display")
         display_mode = normalize_limit_display_mode(
-            self.settings.value(
-                LIMIT_DISPLAY_MODE_KEY,
-                DEFAULT_LIMIT_DISPLAY_MODE,
-            )
+            self.settings.value(LIMIT_DISPLAY_MODE_KEY, DEFAULT_LIMIT_DISPLAY_MODE)
         )
-        self.limit_display_toggle = QFrame()
-        self.limit_display_toggle.setObjectName("LimitModeToggle")
-        toggle_layout = QHBoxLayout(self.limit_display_toggle)
-        toggle_layout.setContentsMargins(0, 0, 0, 0)
-        toggle_layout.setSpacing(0)
-        self.limit_display_group = QButtonGroup(self.limit_display_toggle)
-        self.limit_display_group.setExclusive(True)
         self.limit_used_button = QPushButton("Used")
         self.limit_remaining_button = QPushButton("Remaining")
-        for button, mode in (
-            (self.limit_used_button, "used"),
-            (self.limit_remaining_button, "remaining"),
-        ):
-            button.setObjectName(
-                "LimitModeUsedSegment" if mode == "used" else "LimitModeRemainingSegment"
-            )
-            button.setProperty("limitModeSegment", True)
-            button.setCheckable(True)
-            button.setProperty("limitMode", mode)
-            button.setFixedWidth(112)
-            button.setToolTip(
-                "Show quota consumed" if mode == "used" else "Show quota left"
-            )
-            self.limit_display_group.addButton(button)
-            toggle_layout.addWidget(button)
+        self.limit_display_toggle, self.limit_display_group = self._segmented(
+            [
+                (self.limit_used_button, "used", "LimitModeUsedSegment", "Show quota consumed"),
+                (self.limit_remaining_button, "remaining", "LimitModeRemainingSegment", "Show quota left"),
+            ],
+            "LimitMode", "limitMode",
+        )
         self.limit_used_button.setChecked(display_mode == "used")
         self.limit_remaining_button.setChecked(display_mode == "remaining")
         self.limit_display_group.buttonClicked.connect(
             lambda button: self._save_preference(
-                LIMIT_DISPLAY_MODE_KEY,
-                str(button.property("limitMode")),
+                LIMIT_DISPLAY_MODE_KEY, str(button.property("limitMode"))
             )
         )
-        self.limit_display_toggle.setStyleSheet(
-            "QPushButton[limitModeSegment='true'] {"
-            "  border: 1px solid palette(mid); padding: 5px 12px; margin: 0;"
-            "  background: palette(button);"
-            "}"
-            "QPushButton#LimitModeUsedSegment {"
-            "  border-top-left-radius: 6px; border-bottom-left-radius: 6px;"
-            "  border-right-width: 0;"
-            "}"
-            "QPushButton#LimitModeRemainingSegment {"
-            "  border-top-right-radius: 6px; border-bottom-right-radius: 6px;"
-            "}"
-            "QPushButton[limitModeSegment='true']:checked {"
-            "  background: #2563eb; color: white; border-color: #2563eb;"
-            "  font-weight: 600;"
-            "}"
+        self._settings_row(
+            display, "Show limits as", self.limit_display_toggle,
+            "Applies to Home, the tray tooltip, the desktop-pet hover and alerts. "
+            "Warning and critical thresholds always mean quota used.",
         )
-        display_row.addWidget(self.limit_display_toggle)
-        display_row.addStretch(1)
-        limits_layout.addLayout(display_row)
-        display_hint = QLabel(
-            "This applies to Home, the tray tooltip, the desktop-pet hover and alerts. "
-            "Warning and critical thresholds always mean quota used."
-        )
-        display_hint.setWordWrap(True)
-        display_hint.setStyleSheet("color: #6b7280;")
-        limits_layout.addWidget(display_hint)
-        time_row = QHBoxLayout()
-        time_row.addWidget(QLabel("Show limit times as"))
+
         time_mode = normalize_limit_time_mode(
-            self.settings.value(
-                LIMIT_TIME_MODE_KEY,
-                DEFAULT_LIMIT_TIME_MODE,
-            )
+            self.settings.value(LIMIT_TIME_MODE_KEY, DEFAULT_LIMIT_TIME_MODE)
         )
-        self.limit_time_toggle = QFrame()
-        self.limit_time_toggle.setObjectName("LimitTimeModeToggle")
-        time_toggle_layout = QHBoxLayout(self.limit_time_toggle)
-        time_toggle_layout.setContentsMargins(0, 0, 0, 0)
-        time_toggle_layout.setSpacing(0)
-        self.limit_time_group = QButtonGroup(self.limit_time_toggle)
-        self.limit_time_group.setExclusive(True)
         self.limit_time_remaining_button = QPushButton("Time left")
         self.limit_time_datetime_button = QPushButton("Date & time")
-        for button, mode in (
-            (self.limit_time_remaining_button, "remaining"),
-            (self.limit_time_datetime_button, "datetime"),
-        ):
-            button.setObjectName(
-                "LimitTimeRemainingSegment"
-                if mode == "remaining"
-                else "LimitTimeDatetimeSegment"
-            )
-            button.setProperty("limitTimeModeSegment", True)
-            button.setCheckable(True)
-            button.setProperty("limitTimeMode", mode)
-            button.setFixedWidth(112)
-            button.setToolTip(
-                "Show compact countdowns"
-                if mode == "remaining"
-                else "Show a short date and time"
-            )
-            self.limit_time_group.addButton(button)
-            time_toggle_layout.addWidget(button)
+        self.limit_time_toggle, self.limit_time_group = self._segmented(
+            [
+                (self.limit_time_remaining_button, "remaining", "LimitTimeRemainingSegment", "Show compact countdowns"),
+                (self.limit_time_datetime_button, "datetime", "LimitTimeDatetimeSegment", "Show a short date and time"),
+            ],
+            "LimitTimeMode", "limitTimeMode",
+        )
         self.limit_time_remaining_button.setChecked(time_mode == "remaining")
         self.limit_time_datetime_button.setChecked(time_mode == "datetime")
         self.limit_time_group.buttonClicked.connect(
             lambda button: self._save_preference(
-                LIMIT_TIME_MODE_KEY,
-                str(button.property("limitTimeMode")),
+                LIMIT_TIME_MODE_KEY, str(button.property("limitTimeMode"))
             )
         )
-        self.limit_time_toggle.setStyleSheet(
-            "QPushButton[limitTimeModeSegment='true'] {"
-            "  border: 1px solid palette(mid); padding: 5px 12px; margin: 0;"
-            "  background: palette(button);"
-            "}"
-            "QPushButton#LimitTimeRemainingSegment {"
-            "  border-top-left-radius: 6px; border-bottom-left-radius: 6px;"
-            "  border-right-width: 0;"
-            "}"
-            "QPushButton#LimitTimeDatetimeSegment {"
-            "  border-top-right-radius: 6px; border-bottom-right-radius: 6px;"
-            "}"
-            "QPushButton[limitTimeModeSegment='true']:checked {"
-            "  background: #2563eb; color: white; border-color: #2563eb;"
-            "  font-weight: 600;"
-            "}"
+        self._settings_row(
+            display, "Show times as", self.limit_time_toggle,
+            "Applies to resets, depletion forecasts, reset-credit expiry and "
+            "related warnings.",
         )
-        time_row.addWidget(self.limit_time_toggle)
-        time_row.addStretch(1)
-        limits_layout.addLayout(time_row)
-        time_hint = QLabel(
-            "Applies to resets, depletion forecasts, reset-credit expiry and related warnings."
-        )
-        time_hint.setWordWrap(True)
-        time_hint.setStyleSheet("color: #6b7280;")
-        limits_layout.addWidget(time_hint)
+
         self.forecast_check = self._setting_check(
             "Show depletion forecast for timed limits",
             FORECAST_ENABLED_KEY,
@@ -1635,7 +1740,10 @@ class MainWindow(QMainWindow):
             "Uses average quota consumption since each known window began. "
             "When a forecast cannot be calculated, the limit row explains why."
         )
-        limits_layout.addWidget(self.forecast_check)
+        self.forecast_check.setStyleSheet("border: none;")
+        display.addWidget(self.forecast_check)
+
+        alerts = self._settings_card(content, "Alerts")
         self.limit_notifications_check = self._setting_check(
             "Limit notifications", LIMIT_NOTIFICATIONS_KEY, DEFAULT_LIMIT_NOTIFICATIONS
         )
@@ -1645,9 +1753,9 @@ class MainWindow(QMainWindow):
             DEFAULT_COMPANION_NOTIFICATIONS,
         )
         for check in (self.limit_notifications_check, self.event_notifications_check):
-            limits_layout.addWidget(check)
-        thresholds = QHBoxLayout()
-        thresholds.addWidget(QLabel("Warning at"))
+            check.setStyleSheet("border: none;")
+            alerts.addWidget(check)
+
         self.warning_spin = _no_wheel(QSpinBox())
         self.warning_spin.setRange(WARNING_MIN, WARNING_MAX)
         self.warning_spin.setSingleStep(THRESHOLD_STEP)
@@ -1658,8 +1766,8 @@ class MainWindow(QMainWindow):
             )
         )
         self.warning_spin.valueChanged.connect(self._save_warning_threshold)
-        thresholds.addWidget(self.warning_spin)
-        thresholds.addWidget(QLabel("Critical at"))
+        self._settings_row(alerts, "Warn at", self.warning_spin)
+
         self.critical_spin = _no_wheel(QSpinBox())
         self.critical_spin.setRange(CRITICAL_MIN, CRITICAL_MAX)
         self.critical_spin.setSingleStep(THRESHOLD_STEP)
@@ -1670,32 +1778,102 @@ class MainWindow(QMainWindow):
             )
         )
         self.critical_spin.valueChanged.connect(self._save_critical_threshold)
-        thresholds.addWidget(self.critical_spin)
-        thresholds.addStretch(1)
-        limits_layout.addLayout(thresholds)
-        layout.addWidget(limits_group)
+        self._settings_row(
+            alerts, "Critical at", self.critical_spin,
+            "Critical is always kept above the warning threshold.",
+        )
 
-        appearance = QGroupBox("Appearance")
-        appearance_layout = QHBoxLayout(appearance)
-        appearance_layout.addWidget(QLabel("Theme"))
+        content.addStretch(1)
+        return page
+
+    def _settings_page_tray(self) -> QWidget:
+        page, content = self._settings_page(
+            "Tray",
+            "What the tray icon's tooltip shows when you hover it.",
+        )
+        card = self._settings_card(content, "")
+        self.tray_tokens_check = self._setting_check(
+            "Show today's tokens", "tray_show_tokens", True
+        )
+        self.tray_cost_check = self._setting_check(
+            "Show estimated cost", "tray_show_cost", False
+        )
+        self.tray_limit_check = self._setting_check(
+            "Show highest limit percentage", "tray_show_limit", True
+        )
+        for check in (self.tray_tokens_check, self.tray_cost_check, self.tray_limit_check):
+            check.setStyleSheet("border: none;")
+            card.addWidget(check)
+        card.addWidget(
+            self._settings_caption(
+                "The limit line also carries the reset countdown when one is known."
+            )
+        )
+        content.addStretch(1)
+        return page
+
+    def _settings_page_general(self) -> QWidget:
+        page, content = self._settings_page(
+            "General",
+            "Startup, refresh cadence, language and theme.",
+        )
+        card = self._settings_card(content, "")
+
+        self.interval_combo = _no_wheel(QComboBox())
+        for minutes in (1, 2, 5, 10, 15):
+            self.interval_combo.addItem(f"{minutes} min", minutes)
+        current = int(self.settings.value("refresh_minutes", 5))
+        self.interval_combo.setCurrentIndex(max(0, self.interval_combo.findData(current)))
+        self.interval_combo.currentIndexChanged.connect(self._save_interval)
+        self._settings_row(
+            card, "Refresh interval", self.interval_combo,
+            "How often local usage and official limits are re-read.",
+        )
+
+        self.language_combo = _no_wheel(QComboBox())
+        for label, code in (
+            ("English", "en"), ("Español", "es"), ("Français", "fr"), ("日本語", "ja")
+        ):
+            self.language_combo.addItem(label, code)
+        self.language_combo.setCurrentIndex(
+            max(0, self.language_combo.findData(self.state.language))
+        )
+        self.language_combo.currentIndexChanged.connect(
+            lambda: self.language_changed.emit(str(self.language_combo.currentData()))
+        )
+        self._settings_row(card, "Pokémon names", self.language_combo)
+
         self.theme_combo = _no_wheel(QComboBox())
-        for label, key in (("Follow Windows", "system"), ("Light", "light"), ("Dark", "dark")):
+        for label, key in (
+            ("Follow Windows", "system"), ("Light", "light"), ("Dark", "dark")
+        ):
             self.theme_combo.addItem(label, key)
-        self.theme_combo.setCurrentIndex(max(0, self.theme_combo.findData(self.settings.value("theme", "system"))))
+        self.theme_combo.setCurrentIndex(
+            max(0, self.theme_combo.findData(self.settings.value("theme", "system")))
+        )
         self.theme_combo.currentIndexChanged.connect(
             lambda: self._save_preference("theme", str(self.theme_combo.currentData()))
         )
-        appearance_layout.addWidget(self.theme_combo)
-        appearance_layout.addStretch(1)
-        layout.addWidget(appearance)
+        self._settings_row(card, "Theme", self.theme_combo)
 
-        advanced = QGroupBox("Advanced")
-        advanced.setCheckable(True)
-        advanced.setChecked(False)
-        advanced_layout = QVBoxLayout(advanced)
-        data_hint = QLabel("Export a backup or replace the current save from a JSON backup.")
-        data_hint.setWordWrap(True)
-        advanced_layout.addWidget(data_hint)
+        self.autostart_check = QCheckBox("Start automatically after login")
+        self.autostart_check.setChecked(_autostart_enabled())
+        self.autostart_check.toggled.connect(self._toggle_autostart)
+        self.autostart_check.setStyleSheet("border: none;")
+        card.addWidget(self.autostart_check)
+
+        content.addStretch(1)
+        return page
+
+    def _settings_page_advanced(self) -> QWidget:
+        page, content = self._settings_page(
+            "Advanced",
+            "Backups, and where all of this data comes from.",
+        )
+        backup = self._settings_card(
+            content, "Save data",
+            "Export a backup, or replace the current save from a JSON backup.",
+        )
         data_actions = QHBoxLayout()
         export_button = QPushButton("Export save…")
         import_button = QPushButton("Import save…")
@@ -1703,20 +1881,20 @@ class MainWindow(QMainWindow):
         import_button.clicked.connect(self.import_requested.emit)
         data_actions.addWidget(export_button)
         data_actions.addWidget(import_button)
-        advanced_layout.addLayout(data_actions)
-        for advanced_widget in (data_hint, export_button, import_button):
-            advanced_widget.setVisible(False)
-            advanced.toggled.connect(advanced_widget.setVisible)
-        layout.addWidget(advanced)
+        data_actions.addStretch(1)
+        backup.addLayout(data_actions)
 
-        note = QLabel(
-            "Data is read locally from supported AI coding tools. Pokemon metadata and sprites are fetched "
-            "from PokeAPI/PokeAPI sprites. Claude/Codex official limit checks use their existing local credentials/processes."
+        about = self._settings_card(content, "Where the data comes from")
+        about.addWidget(
+            self._settings_caption(
+                "Usage is read locally from supported AI coding tools. Pokemon "
+                "metadata and sprites come from PokeAPI. Claude and Codex limit "
+                "checks use their existing local credentials, and nothing is "
+                "uploaded anywhere."
+            )
         )
-        note.setWordWrap(True)
-        layout.addWidget(note)
-        layout.addStretch(1)
-        return root
+        content.addStretch(1)
+        return page
 
     def _setting_check(self, text: str, key: str, default: bool) -> QCheckBox:
         check = QCheckBox(text)
@@ -1792,6 +1970,8 @@ class MainWindow(QMainWindow):
         self.pet_size_slider.setEnabled(enabled)
         self.pet_size_label.setEnabled(enabled)
         self.pet_snap_check.setEnabled(enabled)
+        if hasattr(self, 'pet_party_check'):
+            self.pet_party_check.setEnabled(enabled)
         self.pet_alerts_check.setEnabled(enabled)
 
     def sync_floating_pet_settings(self, *, enabled: bool | None = None, size: int | None = None) -> None:
@@ -2637,6 +2817,7 @@ class TrayController(QObject):
         self.window.party_assign_requested.connect(self._assign_party_slot)
         self.window.reset_requested.connect(self._reset_app)
         self.window.pace_changed.connect(self._set_pace)
+        self.window.pet_party_changed.connect(self._set_party_visible)
         self.window.preferences_changed.connect(self._preferences_changed)
         self.window.representative_changed.connect(self._set_representative)
         self.window.language_changed.connect(self._set_language)
@@ -2754,6 +2935,9 @@ class TrayController(QObject):
 
     def _set_pet_snap(self, enabled: bool) -> None:
         self.floating_pet.set_snap_enabled(bool(enabled))
+
+    def _set_party_visible(self, visible: bool) -> None:
+        self.floating_pet.set_party_visible(bool(visible))
 
     def _set_pace(self, pace: object) -> None:
         target = normalize_pace(pace)

@@ -47,6 +47,7 @@ PET_SIZE_KEY = "floating_pet/size"
 PET_X_KEY = "floating_pet/position_x"
 PET_Y_KEY = "floating_pet/position_y"
 PET_SNAP_KEY = "floating_pet/snap_taskbar"
+PET_PARTY_KEY = "floating_pet/show_party"
 
 # Bench companions render beside the main at a fraction of its size, so the
 # main stays the obvious focal point of the row.
@@ -197,6 +198,29 @@ def _white_silhouette(pixmap: QPixmap) -> QPixmap:
     return canvas
 
 
+def _visible_rect(pixmap: QPixmap):
+    """Bounding box of the non-transparent pixels, or None when fully empty.
+
+    Sprite sheets pad every frame to a fixed square, so the artwork rarely
+    touches the bottom of its own image. Aligning boxes therefore does NOT
+    align feet - the real content bounds are needed.
+    """
+    if pixmap.isNull():
+        return None
+    bounds = QRegion(pixmap.mask()).boundingRect()
+    if bounds.isEmpty():
+        return None
+    return bounds
+
+
+def _trim_transparent(pixmap: QPixmap) -> QPixmap:
+    """Crop a sprite down to its artwork so it can be aligned by its feet."""
+    bounds = _visible_rect(pixmap)
+    if bounds is None:
+        return pixmap
+    return pixmap.copy(bounds)
+
+
 class FloatingPetWindow(QWidget):
     clicked = Signal()
     hide_requested = Signal()
@@ -308,7 +332,7 @@ class FloatingPetWindow(QWidget):
         # Bench sprites sit bottom-aligned with the main so the row reads as a
         # line-up standing on the same ground rather than floating boxes.
         x = lead + self.pet_size + gap
-        baseline = self.sprite_area()
+        baseline = self.main_feet_y()
         for label, path in zip(self.bench_labels, self.bench_paths):
             if path is None:
                 label.hide()
@@ -334,8 +358,12 @@ class FloatingPetWindow(QWidget):
             pixmap = QPixmap(str(path)) if path.exists() else QPixmap()
             if pixmap.isNull():
                 pixmap = _pokeball_pixmap(small)
+            # Trim the sprite's padding so the label's bottom IS the feet.
+            label.setAlignment(
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom
+            )
             label.setPixmap(
-                pixmap.scaled(
+                _trim_transparent(pixmap).scaled(
                     small,
                     small,
                     Qt.AspectRatioMode.KeepAspectRatio,
@@ -509,6 +537,16 @@ class FloatingPetWindow(QWidget):
     def sprite_area(self) -> int:
         """The sprite always gets the full pet size."""
         return self.pet_size
+
+    def main_feet_y(self) -> int:
+        """Y of the main sprite's lowest visible pixel, for aligning the bench."""
+        pixmap = self.label.pixmap()
+        bounds = _visible_rect(pixmap) if pixmap is not None else None
+        if bounds is None:
+            return self.sprite_area()
+        # The label centres its pixmap inside the sprite box.
+        top = (self.sprite_area() - pixmap.height()) // 2
+        return max(1, min(self.sprite_area(), top + bounds.bottom() + 1))
 
     def _level_font(self) -> QFont:
         font = QFont(self.level_label.font())
@@ -853,6 +891,8 @@ class FloatingPetController(QObject):
         self.show_limit = settings_bool(settings.value("tray_show_limit", True), True)
         self.size = normalize_pet_size(settings.value(PET_SIZE_KEY, PET_DEFAULT_SIZE))
         self.snap_enabled = settings_bool(settings.value(PET_SNAP_KEY, False), False)
+        self.party_visible = settings_bool(settings.value(PET_PARTY_KEY, True), True)
+        self._last_bench_paths: list[Path | None] = []
         self.result: Any | None = None
         self.initial_reveal_played = False
         self.reveal_on_next_update = False
@@ -956,12 +996,24 @@ class FloatingPetController(QObject):
         self.hide_evolution_prompt()
         self.pet.play_evolution(from_path, to_path)
 
+    def set_party_visible(self, visible: bool) -> None:
+        """Show the whole party beside the main, or just the main on its own."""
+        self.party_visible = bool(visible)
+        self.settings.setValue(PET_PARTY_KEY, self.party_visible)
+        self.settings.sync()
+        self.set_bench(self._last_bench_paths)
+
     def set_bench(self, paths: list[Path | None]) -> None:
         """Update the smaller companions shown beside the main Pokemon.
 
         The window grows or shrinks with the bench, so reposition afterwards or
         a wider row can end up hanging off the edge of the screen.
         """
+        self._last_bench_paths = list(paths)
+        if not self.party_visible:
+            # 'Main only' hides the bench without forgetting it, so toggling
+            # back does not wait for the next refresh to repopulate.
+            paths = [None] * len(paths)
         if list(paths) == list(self.pet.bench_paths):
             return  # nothing changed; do not touch geometry on every refresh
         self.pet.set_bench(paths)
