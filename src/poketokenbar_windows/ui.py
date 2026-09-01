@@ -141,8 +141,13 @@ from .state import (
     buy_item,
     companion_progress_percent,
     owned_representative_options,
+    PARTY_BENCH_SIZE,
+    assign_party_slot,
+    clear_party_slot,
+    party_members,
     representative_subject,
     set_generation_filter,
+    swap_main,
     set_representative,
     usage_delta,
     use_item,
@@ -645,6 +650,9 @@ class MainWindow(QMainWindow):
     pet_size_changed = Signal(int)
     pet_snap_changed = Signal(bool)
     generation_filter_changed = Signal(object)
+    party_swap_requested = Signal(int)
+    party_clear_requested = Signal(int)
+    party_assign_requested = Signal(int, object)
     preferences_changed = Signal()
     representative_changed = Signal(object)
     language_changed = Signal(str)
@@ -811,6 +819,7 @@ class MainWindow(QMainWindow):
         representative_row.addWidget(self.representative_combo, 1)
         layout.addLayout(representative_row)
         inner = QTabWidget()
+        inner.addTab(self._wrap_scroll(self._build_party_page()), "Party")
         inner.addTab(self._wrap_scroll(self._build_dex_page()), "Pokédex")
         inner.addTab(self._wrap_scroll(self._build_catch_page()), "Catch log")
         layout.addWidget(inner)
@@ -822,6 +831,121 @@ class MainWindow(QMainWindow):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(widget)
         return scroll
+
+    def _build_party_page(self) -> QWidget:
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        blurb = QLabel(
+            "Your main Pokemon is the only one tokens and Rare Candy feed. "
+            "Benched companions keep their progress frozen until you swap them in, "
+            "and they appear smaller beside the main on the desktop."
+        )
+        blurb.setWordWrap(True)
+        blurb.setStyleSheet("color: palette(mid);")
+        layout.addWidget(blurb)
+        self.party_grid = QGridLayout()
+        self.party_grid.setSpacing(10)
+        layout.addLayout(self.party_grid)
+        layout.addStretch(1)
+        return root
+
+    def _render_party(self) -> None:
+        _clear_layout(self.party_grid)
+        members = party_members(self.state)
+        main = members[0]
+
+        main_card = QFrame()
+        main_card.setFrameShape(QFrame.Shape.StyledPanel)
+        main_card.setStyleSheet(
+            "QFrame { border: 2px solid #2563eb; border-radius: 14px; }"
+        )
+        main_layout = QVBoxLayout(main_card)
+        heading = QLabel("MAIN")
+        hf = heading.font(); hf.setBold(True); heading.setFont(hf)
+        heading.setStyleSheet("color: #2563eb; border: none;")
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(heading)
+        main_layout.addWidget(self._party_sprite(main, 96))
+        main_layout.addWidget(self._party_caption(main, "Egg - no main Pokemon yet"))
+        self.party_grid.addWidget(main_card, 0, 0, 1, 2)
+
+        for slot in range(PARTY_BENCH_SIZE):
+            member = self.state.party[slot] if slot < len(self.state.party) else None
+            card = QFrame()
+            card.setFrameShape(QFrame.Shape.StyledPanel)
+            card.setStyleSheet(
+                "QFrame { border: 1px solid palette(mid); border-radius: 12px; }"
+            )
+            card_layout = QVBoxLayout(card)
+            card_layout.addWidget(self._party_sprite(member, 56))
+            card_layout.addWidget(self._party_caption(member, "Empty slot"))
+
+            swap = QPushButton("Make main")
+            swap.setEnabled(member is not None or main is not None)
+            swap.setToolTip(
+                "Swap this Pokemon with your main. Both keep their own growth."
+            )
+            swap.clicked.connect(lambda _checked=False, index=slot: self.party_swap_requested.emit(index))
+            card_layout.addWidget(swap)
+
+            remove = QPushButton("Remove")
+            remove.setEnabled(member is not None)
+            remove.setToolTip("Free this slot. The Pokemon stays in your Pokedex.")
+            remove.clicked.connect(lambda _checked=False, index=slot: self.party_clear_requested.emit(index))
+            card_layout.addWidget(remove)
+
+            if member is None:
+                picker = QComboBox()
+                picker.addItem("Add from Pokedex...", None)
+                for position, catch in enumerate(self.state.catches):
+                    name = self.api.localized_name(catch.species_id, self.state.language)
+                    prefix = "✨ " if catch.is_shiny else ""
+                    picker.addItem(f"{prefix}#{catch.species_id:03d} {name}", position)
+                picker.currentIndexChanged.connect(
+                    lambda _index=0, combo=None, target=slot: None
+                )
+                picker.activated.connect(
+                    lambda _index, combo=picker, target=slot: (
+                        self.party_assign_requested.emit(target, combo.currentData())
+                        if combo.currentData() is not None
+                        else None
+                    )
+                )
+                card_layout.addWidget(picker)
+
+            self.party_grid.addWidget(card, 1 + slot // 3, slot % 3)
+
+    def _party_sprite(self, member, size: int) -> QLabel:
+        label = QLabel()
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setFixedHeight(size + 6)
+        label.setStyleSheet("border: none;")
+        if member is None:
+            label.setPixmap(_pokeball_pixmap(size))
+            return label
+        path = self.api.sprite_path(member.current_id, shiny=member.is_shiny, animated=False)
+        pix = _sprite_pixmap(path, size)
+        label.setPixmap(pix if not pix.isNull() else _pokeball_pixmap(size))
+        return label
+
+    def _party_caption(self, member, empty_text: str) -> QLabel:
+        label = QLabel()
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setWordWrap(True)
+        label.setStyleSheet("border: none;")
+        if member is None:
+            label.setText(empty_text)
+            label.setStyleSheet("color: palette(mid); border: none;")
+            return label
+        name = self.api.localized_name(member.current_id, self.state.language)
+        shiny = "✨ " if member.is_shiny else ""
+        newline = chr(10)
+        label.setText(
+            f"{shiny}{name}{newline}"
+            f"#{member.current_id:03d} · {generation_label(member.current_id)}{newline}"
+            f"{member.rarity.title()} · {member.nature}"
+        )
+        return label
 
     def _build_dex_page(self) -> QWidget:
         page = QWidget()
@@ -1395,6 +1519,7 @@ class MainWindow(QMainWindow):
         self._sync_generation_combo()
         self._render_bag_shop()
         self._render_collection()
+        self._render_party()
 
     def _sync_generation_combo(self) -> None:
         combo = getattr(self, "generation_combo", None)
@@ -2105,6 +2230,9 @@ class TrayController(QObject):
         self.window.pet_size_changed.connect(self._set_pet_size)
         self.window.pet_snap_changed.connect(self._set_pet_snap)
         self.window.generation_filter_changed.connect(self._set_generation_filter)
+        self.window.party_swap_requested.connect(self._swap_main)
+        self.window.party_clear_requested.connect(self._clear_party_slot)
+        self.window.party_assign_requested.connect(self._assign_party_slot)
         self.window.preferences_changed.connect(self._preferences_changed)
         self.window.representative_changed.connect(self._set_representative)
         self.window.language_changed.connect(self._set_language)
@@ -2214,6 +2342,55 @@ class TrayController(QObject):
     def _set_pet_snap(self, enabled: bool) -> None:
         self.floating_pet.set_snap_enabled(bool(enabled))
 
+    def _mutate_party(self, action, failure: str) -> None:
+        """Apply a party change on a copy, persist it, then refresh the surfaces.
+
+        Mutating a deep copy means a failed save leaves the live state and the
+        file on disk untouched rather than half-applied.
+        """
+        try:
+            with self.state_lock:
+                candidate = copy.deepcopy(self.state)
+                if not action(candidate):
+                    return
+                self.store.save(candidate)
+                self.state = candidate
+        except Exception:  # noqa: BLE001
+            QMessageBox.warning(self.window, "PokeTokenBar", failure)
+            return
+        self.window.set_state(self.state)
+        preview = self._representative_preview()
+        if preview is not None:
+            self.last_result = preview
+            self._update_companion_surfaces(preview)
+
+    def _swap_main(self, slot: int) -> None:
+        self._mutate_party(
+            lambda state: swap_main(state, int(slot)),
+            "That swap could not be saved. Your party was not changed.",
+        )
+
+    def _clear_party_slot(self, slot: int) -> None:
+        self._mutate_party(
+            lambda state: clear_party_slot(state, int(slot)),
+            "That slot could not be cleared. Your party was not changed.",
+        )
+
+    def _assign_party_slot(self, slot: int, catch_index: object) -> None:
+        if catch_index is None:
+            return
+
+        def action(state) -> bool:
+            try:
+                catch = state.catches[int(catch_index)]
+            except (TypeError, ValueError, IndexError):
+                return False
+            return assign_party_slot(state, int(slot), catch)
+
+        self._mutate_party(
+            action, "That Pokemon could not be added. Your party was not changed."
+        )
+
     def _set_generation_filter(self, generation: object) -> None:
         try:
             with self.state_lock:
@@ -2293,8 +2470,27 @@ class TrayController(QObject):
             pet_is_egg=subject.is_egg,
         )
 
+    def _bench_sprite_paths(self) -> list[Path | None]:
+        """Static sprites for the benched companions, in slot order.
+
+        Static rather than animated on purpose: five extra QMovie loops beside
+        the main would cost far more CPU than the row is worth.
+        """
+        paths: list[Path | None] = []
+        for member in (self.state.party or []):
+            if member is None:
+                paths.append(None)
+                continue
+            paths.append(
+                self.api.sprite_path(
+                    member.current_id, shiny=member.is_shiny, animated=False
+                )
+            )
+        return paths
+
     def _update_companion_surfaces(self, result: RefreshResult) -> None:
         self.floating_pet.update(result)
+        self.floating_pet.set_bench(self._bench_sprite_paths())
         self.tray.setIcon(
             _icon_from_sprite(result.pet_sprite_path, fallback_egg=result.pet_is_egg)
         )

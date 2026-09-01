@@ -44,6 +44,11 @@ PET_SIZE_KEY = "floating_pet/size"
 PET_X_KEY = "floating_pet/position_x"
 PET_Y_KEY = "floating_pet/position_y"
 PET_SNAP_KEY = "floating_pet/snap_taskbar"
+
+# Bench companions render beside the main at a fraction of its size, so the
+# main stays the obvious focal point of the row.
+BENCH_SCALE = 0.5
+BENCH_GAP_SCALE = 0.06
 PET_ALERTS_KEY = "floating_pet/alerts_enabled"
 PET_ALERT_MEMORY_KEY = "floating_pet/alert_memory"
 MENU_OPEN_LABEL = "Open PokeTokenBar"
@@ -206,6 +211,8 @@ class FloatingPetWindow(QWidget):
         self.reveal_ball_pixmap = QPixmap()
         self.reveal_target_pixmap = QPixmap()
         self.pet_size = normalize_pet_size(size)
+        self.bench_labels: list[QLabel] = []
+        self.bench_paths: list[Path | None] = []
         self._press_global: QPoint | None = None
         self._start_position: QPoint | None = None
         self._dragging = False
@@ -217,9 +224,59 @@ class FloatingPetWindow(QWidget):
 
     def set_pet_size(self, size: int) -> None:
         self.pet_size = normalize_pet_size(size)
-        self.setFixedSize(self.pet_size, self.pet_size)
-        self.label.setGeometry(0, 0, self.pet_size, self.pet_size)
+        self._relayout()
         self._render_current_frame()
+
+    def bench_size(self) -> int:
+        return max(16, round(self.pet_size * BENCH_SCALE))
+
+    def _relayout(self) -> None:
+        """Size the window to the main sprite plus however many bench slots show."""
+        filled = [path for path in self.bench_paths if path is not None]
+        gap = max(2, round(self.pet_size * BENCH_GAP_SCALE))
+        small = self.bench_size()
+        width = self.pet_size + (len(filled) * (small + gap) if filled else 0)
+        self.setFixedSize(width, self.pet_size)
+        self.label.setGeometry(0, 0, self.pet_size, self.pet_size)
+        # Bench sprites sit bottom-aligned with the main so the row reads as a
+        # line-up standing on the same ground rather than floating boxes.
+        x = self.pet_size + gap
+        for label, path in zip(self.bench_labels, self.bench_paths):
+            if path is None:
+                label.hide()
+                continue
+            label.setGeometry(x, self.pet_size - small, small, small)
+            label.show()
+            x += small + gap
+
+    def set_bench(self, paths: list[Path | None]) -> None:
+        """Show up to five smaller companions beside the main Pokemon."""
+        self.bench_paths = list(paths)
+        while len(self.bench_labels) < len(self.bench_paths):
+            extra = QLabel(self)
+            extra.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            extra.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            extra.setStyleSheet("background: transparent;")
+            self.bench_labels.append(extra)
+        small = self.bench_size()
+        for label, path in zip(self.bench_labels, self.bench_paths):
+            if path is None:
+                label.clear()
+                continue
+            pixmap = QPixmap(str(path)) if path.exists() else QPixmap()
+            if pixmap.isNull():
+                pixmap = _pokeball_pixmap(small)
+            label.setPixmap(
+                pixmap.scaled(
+                    small,
+                    small,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        for label in self.bench_labels[len(self.bench_paths):]:
+            label.hide()
+        self._relayout()
 
     def set_sprite(self, path: Path | None, *, is_egg: bool) -> None:
         self.reveal_timer.stop()
@@ -675,19 +732,33 @@ class FloatingPetController(QObject):
         if not rects:
             return None
         overlapping = max(rects, key=lambda r: r.overlap_area(x, y, self.size))
-        if overlapping.overlap_area(x, y, self.size) > 0:
+        if overlapping.overlap_area(x, y, self.size) > 0:  # noqa: SIM108
             return overlapping
         return min(rects, key=lambda r: r.distance_squared(x, y))
 
+    def _window_width(self) -> int:
+        width = self.pet.width()
+        return max(self.size, int(width) if width else self.size)
+
     def _resolve_position(self, x: Any, y: Any) -> tuple[int, int]:
         """Clamp into a work area, then dock to the taskbar edge when snapping."""
-        target = recover_pet_position(x, y, self.size, self._screen_rects())
+        width = self._window_width()
+        target = recover_pet_position(x, y, self.size, self._screen_rects(), width=width)
         if not self.snap_enabled:
             return target
         screen = self._screen_for(*target)
         if screen is None:
             return target
-        return snap_pet_position(target[0], self.size, screen)
+        return snap_pet_position(target[0], self.size, screen, width=width)
+
+    def set_bench(self, paths: list[Path | None]) -> None:
+        """Update the smaller companions shown beside the main Pokemon.
+
+        The window grows or shrinks with the bench, so reposition afterwards or
+        a wider row can end up hanging off the edge of the screen.
+        """
+        self.pet.set_bench(paths)
+        self._save_position(self.pet.x(), self.pet.y())
 
     def set_snap_enabled(self, enabled: bool) -> None:
         """Turn taskbar docking on or off and reposition immediately."""

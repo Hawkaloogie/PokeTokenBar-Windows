@@ -184,5 +184,37 @@ class SnapPetPositionTests(unittest.TestCase):
         self.assertGreaterEqual(x, screen.x)
 
 
+class WidePetPositionTests(unittest.TestCase):
+    """A party row makes the window wider than tall; clamps must respect that."""
+
+    SCREEN = ScreenRect(0, 0, 1920, 1040)
+
+    def test_a_wide_window_is_clamped_by_its_width_not_its_sprite(self) -> None:
+        x, _y = snap_pet_position(1900, 96, self.SCREEN, margin=8, width=366)
+        self.assertLessEqual(x + 366, self.SCREEN.right)
+
+    def test_width_defaults_to_the_sprite_box(self) -> None:
+        self.assertEqual(
+            snap_pet_position(500, 96, self.SCREEN, margin=8),
+            snap_pet_position(500, 96, self.SCREEN, margin=8, width=96),
+        )
+
+    def test_a_width_smaller_than_the_sprite_is_ignored(self) -> None:
+        self.assertEqual(
+            snap_pet_position(500, 96, self.SCREEN, margin=8, width=10),
+            snap_pet_position(500, 96, self.SCREEN, margin=8),
+        )
+
+    def test_recover_also_keeps_a_wide_window_on_screen(self) -> None:
+        from poketokenbar_windows.pet_logic import recover_pet_position
+
+        x, _y = recover_pet_position(1900, 500, 96, [self.SCREEN], width=366)
+        self.assertLessEqual(x + 366, self.SCREEN.right)
+
+    def test_vertical_snap_still_uses_the_sprite_height(self) -> None:
+        _x, y = snap_pet_position(100, 96, self.SCREEN, margin=8, width=366)
+        self.assertEqual(y, self.SCREEN.bottom - 8 - 96)
+
+
 if __name__ == "__main__":
     unittest.main()
