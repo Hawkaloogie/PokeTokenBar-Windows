@@ -23,6 +23,10 @@ from .windows import state_dir
 
 STATE_VERSION = 2
 
+# One main plus five benched companions, matching a six-slot game party.
+PARTY_BENCH_SIZE = 5
+PARTY_TOTAL_SIZE = PARTY_BENCH_SIZE + 1
+
 
 @dataclass(slots=True)
 class MonState:
@@ -75,6 +79,13 @@ class GameState:
     # future hatches to that generation only. Applies at hatch time, so a
     # Pokemon already being raised is unaffected by a change here.
     generation_filter: int | None = None
+    # The bench: up to PARTY_BENCH_SIZE companions kept alongside `mon`, which
+    # is always the main. Bench members keep their own growth counters frozen -
+    # only the main is fed by tokens and Rare Candy - so swapping a Pokemon in
+    # resumes it exactly where it left off. None marks an empty slot.
+    party: list[MonState | None] = field(
+        default_factory=lambda: [None] * PARTY_BENCH_SIZE
+    )
 
     @property
     def wallet(self) -> int:
@@ -205,6 +216,26 @@ def companion_progress_percent(state: GameState) -> int:
     return min(100, max(0, value * 100 // max(1, target)))
 
 
+def _load_party(raw: Any) -> list[MonState | None]:
+    """Rebuild the bench from disk, tolerating junk, shortfalls and overflow.
+
+    A malformed slot degrades to empty rather than failing the whole load - a
+    corrupt bench should never cost someone their main Pokemon and Pokedex.
+    """
+    slots: list[MonState | None] = []
+    if isinstance(raw, list):
+        for item in raw[:PARTY_BENCH_SIZE]:
+            if not isinstance(item, dict):
+                slots.append(None)
+                continue
+            try:
+                slots.append(MonState(**item))
+            except (TypeError, ValueError):
+                slots.append(None)
+    slots.extend([None] * (PARTY_BENCH_SIZE - len(slots)))
+    return slots
+
+
 class StateStore:
     def __init__(self, path: Path | None = None):
         self.path = path or state_dir() / "state.json"
@@ -221,6 +252,7 @@ class StateStore:
             mon_raw = raw.get("mon")
             mon = MonState(**mon_raw) if isinstance(mon_raw, dict) else None
             catches = [CatchRecord(**item) for item in raw.get("catches", []) if isinstance(item, dict)]
+            party = _load_party(raw.get("party"))
             representative_raw = raw.get("representative_species_id")
             try:
                 representative_species_id = int(representative_raw) if representative_raw is not None else None
@@ -252,6 +284,7 @@ class StateStore:
                 claimed_limit_windows=[str(v) for v in raw.get("claimed_limit_windows", [])],
                 candy_feature_seeded=bool(raw.get("candy_feature_seeded", False)),
                 generation_filter=normalize_generation(raw.get("generation_filter")),
+                party=party,
             )
             for key in ("rare_candy", "mint", "shiny_charm"):
                 state.inventory.setdefault(key, 0)
@@ -389,8 +422,13 @@ def apply_usage(state: GameState, delta: int, api: PokeAPIClient) -> list[str]:
             events.append(f"evolved:{mon.current_id}")
             continue
 
-        # Final form completed: archive it and start a fresh egg; overflow carries.
+        # Final form completed: bench it if there is room, then start a fresh
+        # egg so incoming tokens always have somewhere to go. Overflow carries.
         events.append(f"graduated:{mon.current_id}")
+        if add_to_party(state, mon) is None:
+            # Bench full: the Pokemon still lives in the Pokedex, and can be
+            # put on the bench by hand once a slot is freed.
+            events.append(f"party_full:{mon.current_id}")
         state.mon = None
         state.egg_usage = 0
         state.egg_tier = None
@@ -447,6 +485,98 @@ def buy_egg(state: GameState, tier: str | None) -> tuple[bool, str]:
     state.egg_tier = tier
     normalize_representative(state)
     return True, "Fresh egg ready"
+
+
+def _normalize_party(state: GameState) -> list[MonState | None]:
+    """Guarantee the bench is exactly PARTY_BENCH_SIZE slots long."""
+    slots = list(state.party or [])[:PARTY_BENCH_SIZE]
+    slots.extend([None] * (PARTY_BENCH_SIZE - len(slots)))
+    state.party = slots
+    return slots
+
+
+def party_members(state: GameState) -> list[MonState | None]:
+    """The full six-slot party: main first, then the bench in slot order."""
+    return [state.mon, *_normalize_party(state)]
+
+
+def party_open_slot(state: GameState) -> int | None:
+    """Index of the first empty bench slot, or None when the bench is full."""
+    for index, member in enumerate(_normalize_party(state)):
+        if member is None:
+            return index
+    return None
+
+
+def add_to_party(state: GameState, mon: MonState) -> int | None:
+    """Drop a Pokemon into the first free bench slot. None when there is none."""
+    slot = party_open_slot(state)
+    if slot is None:
+        return None
+    state.party[slot] = mon
+    return slot
+
+
+def clear_party_slot(state: GameState, slot: int) -> bool:
+    """Empty one bench slot. The Pokemon stays in the Pokedex."""
+    slots = _normalize_party(state)
+    if not 0 <= slot < len(slots) or slots[slot] is None:
+        return False
+    state.party[slot] = None
+    normalize_representative(state)
+    return True
+
+
+def swap_main(state: GameState, slot: int) -> bool:
+    """Exchange the main Pokemon with a bench slot, keeping both growth counters.
+
+    Each Pokemon carries its own stage_index and used_at_stage, so benching one
+    freezes its progress and swapping it back resumes exactly where it stopped.
+    Swapping never spends or refunds tokens.
+    """
+    slots = _normalize_party(state)
+    if not 0 <= slot < len(slots):
+        return False
+    incoming = slots[slot]
+    if incoming is None and state.mon is None:
+        return False
+    state.party[slot] = state.mon
+    state.mon = incoming
+    # The main slot drives egg progress; an empty main means a fresh egg, and
+    # the egg's accumulated usage must not silently transfer to a real Pokemon.
+    if state.mon is not None:
+        state.egg_usage = 0
+        state.egg_tier = None
+    normalize_representative(state)
+    return True
+
+
+def party_slot_from_catch(catch: CatchRecord) -> MonState:
+    """Build a bench-ready Pokemon from a Pokedex entry, at its owned stage."""
+    path_ids = list(catch.path_ids or [catch.species_id])
+    try:
+        stage_index = path_ids.index(catch.species_id)
+    except ValueError:
+        stage_index = len(path_ids) - 1
+    return MonState(
+        base_id=catch.base_id,
+        path_ids=path_ids,
+        stage_index=max(0, min(stage_index, len(path_ids) - 1)),
+        used_at_stage=0,
+        rarity=catch.rarity,
+        is_shiny=catch.is_shiny,
+        nature=catch.nature,
+    )
+
+
+def assign_party_slot(state: GameState, slot: int, catch: CatchRecord) -> bool:
+    """Put an owned Pokedex entry onto a bench slot, replacing whatever is there."""
+    slots = _normalize_party(state)
+    if not 0 <= slot < len(slots):
+        return False
+    state.party[slot] = party_slot_from_catch(catch)
+    normalize_representative(state)
+    return True
 
 
 def set_generation_filter(state: GameState, generation: Any) -> int | None:
