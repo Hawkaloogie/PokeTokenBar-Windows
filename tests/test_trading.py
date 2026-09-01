@@ -321,5 +321,56 @@ class AcceptTradeTests(unittest.TestCase):
         self.assertEqual(trade_candidates(state, 0), [1])
 
 
+
+class OffersSurviveAFailedRefreshTests(unittest.TestCase):
+    """A failed generation must never wipe the board.
+
+    Reported: trades showed up, then vanished after every restart. The refresh
+    on launch regenerated offers, PokeAPI was not reachable yet, and the empty
+    result was saved over the good ones.
+    """
+
+    class DeadAPI:
+        def hatch_species(self, species_id, shiny_charm=False):
+            raise OSError("network unavailable")
+
+    def _stocked(self) -> GameState:
+        state = GameState()
+        refresh_trades(state, FakeAPI(), "window-1")
+        self.assertEqual(len(state.trade_offers), 3)
+        return state
+
+    def test_a_failed_generation_keeps_the_existing_offers(self) -> None:
+        state = self._stocked()
+        before = [offer_to_dict(o) for o in state.trade_offers]
+        refresh_trades(state, self.DeadAPI(), "window-2")
+        self.assertEqual([offer_to_dict(o) for o in state.trade_offers], before)
+
+    def test_a_failed_generation_reports_no_change(self) -> None:
+        state = self._stocked()
+        self.assertFalse(refresh_trades(state, self.DeadAPI(), "window-2"))
+
+    def test_the_window_is_not_advanced_so_it_retries(self) -> None:
+        state = self._stocked()
+        refresh_trades(state, self.DeadAPI(), "window-2")
+        self.assertEqual(state.trades_window, "window-1")
+        # The retry on the next refresh succeeds and does move the window.
+        self.assertTrue(refresh_trades(state, FakeAPI(), "window-2"))
+        self.assertEqual(state.trades_window, "window-2")
+
+    def test_an_empty_board_can_still_be_filled_when_the_api_works(self) -> None:
+        state = GameState()
+        refresh_trades(state, self.DeadAPI(), "window-1")
+        self.assertEqual(state.trade_offers, [])
+        self.assertTrue(refresh_trades(state, FakeAPI(), "window-1"))
+        self.assertEqual(len(state.trade_offers), 3)
+
+    def test_a_failed_reroll_does_not_consume_the_reroll(self) -> None:
+        state = self._stocked()
+        state.used_since_install = trade_reroll_price() * 4
+        before = [offer_to_dict(o) for o in state.trade_offers]
+        reroll_trades(state, self.DeadAPI(), "window-1")
+        self.assertEqual([offer_to_dict(o) for o in state.trade_offers], before)
+
 if __name__ == "__main__":
     unittest.main()

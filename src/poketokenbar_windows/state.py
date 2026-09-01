@@ -899,9 +899,16 @@ def refresh_trades(
     if not force and state.trade_offers and state.trades_window == key:
         return False
     seed = f"{key}|{state.used_since_install}" if not force else None
-    state.trade_offers = generate_offers(
+    fresh = generate_offers(
         api, count=count, generation_filter=state.generation_filter, seed=seed
     )
+    if not fresh:
+        # Generation needs PokeAPI, which is often unreachable in the seconds
+        # after launch. Saving an empty result over good offers is what made
+        # the board go blank on every restart - keep what we have and let the
+        # next refresh retry, leaving trades_window untouched so it does.
+        return False
+    state.trade_offers = fresh
     if state.trades_window != key:
         # A new window restores the reroll.
         state.trades_rerolled = False
