@@ -151,6 +151,7 @@ from .pokemon import (
     phase_threshold,
 )
 from .theme import (
+    apply_base_palette,
     RADIUS_CARD,
     RADIUS_CONTROL,
     SPACE_LG,
@@ -1106,6 +1107,8 @@ class MainWindow(QMainWindow):
             "border-radius: 8px; }"
         )
         main_layout = QVBoxLayout(main_card)
+        main_layout.setContentsMargins(12, 8, 12, 8)
+        main_layout.setSpacing(4)
         heading = QLabel("MAIN")
         hf = heading.font(); hf.setBold(True); heading.setFont(hf)
         heading.setStyleSheet(
@@ -1113,7 +1116,7 @@ class MainWindow(QMainWindow):
         )
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(heading)
-        main_sprite = self._party_sprite(main, 128)
+        main_sprite = self._party_sprite(main, 84)
         main_layout.addWidget(main_sprite)
         main_caption = self._party_caption(main, "Egg - no main Pokemon yet")
         caption_font = main_caption.font()
@@ -1133,7 +1136,7 @@ class MainWindow(QMainWindow):
         )
         main_star_row.addStretch(1)
         main_layout.addLayout(main_star_row)
-        main_card.setMinimumHeight(220)
+        main_card.setMaximumHeight(190)
         # Span all three columns so the main lines up flush with the bench rack
         # instead of stopping two-thirds across.
         self.party_grid.addWidget(main_card, 0, 0, 1, 3)
@@ -1385,6 +1388,11 @@ class MainWindow(QMainWindow):
         self.trades_list = QVBoxLayout()
         self.trades_list.setSpacing(10)
         layout.addLayout(self.trades_list)
+        self.trades_blocked = QLabel("")
+        self.trades_blocked.setWordWrap(True)
+        self.trades_blocked.setObjectName("Muted")
+        self.trades_blocked.hide()
+        layout.addWidget(self.trades_blocked)
         self.trades_empty = QLabel("No offers right now - they arrive with your next limit reset.")
         self.trades_empty.setWordWrap(True)
         layout.addWidget(self.trades_empty)
@@ -1395,6 +1403,30 @@ class MainWindow(QMainWindow):
         _clear_layout(self.trades_list)
         offers = self.state.trade_offers or []
         self.trades_empty.setVisible(not offers)
+
+        # Explain an unusable board rather than showing three dead pickers.
+        tradeable = [
+            index for index, catch in enumerate(self.state.catches or [])
+            if not catch.is_favourite
+            and catch_index_for(self.state, self.state.mon) != index
+        ]
+        if offers and not tradeable:
+            owned = len(self.state.catches or [])
+            if owned <= 1:
+                why = (
+                    "You have nothing to trade yet. Your main Pokemon is protected "
+                    "from trades, so you need a second one - raise this one to its "
+                    "final form and it moves to the Ranch, or buy an egg from the Shop."
+                )
+            else:
+                why = (
+                    "Everything you own is either your main or a favourite, and "
+                    "neither can be traded away. Unfavourite one, or raise another."
+                )
+            self.trades_blocked.setText(why)
+            self.trades_blocked.show()
+        else:
+            self.trades_blocked.hide()
 
         allowed, reason = can_reroll_trades(self.state)
         price = trade_reroll_price(self.state.pace)
@@ -2628,7 +2660,7 @@ class MainWindow(QMainWindow):
                 # so rather than passing an estimate off as an exact time.
                 detail += " (est.)"
         else:
-            detail = "resets: not reported"
+            detail = "reset time not reported by Anthropic"
         if settings_bool(
             self.settings.value(
                 FORECAST_ENABLED_KEY,
@@ -3790,6 +3822,11 @@ class TrayController(QObject):
         self.tray.setToolTip(tooltip)
 
     def _preferences_changed(self) -> None:
+        # Re-apply the stylesheet AND rebuild the token-styled widgets, or a
+        # theme change did nothing at all until the next restart.
+        self._apply_theme()
+        apply_base_palette(self.app, self._current_theme())
+        self.window.set_state(self.state)
         self.limit_notifications_enabled = settings_bool(
             self.settings.value(LIMIT_NOTIFICATIONS_KEY, DEFAULT_LIMIT_NOTIFICATIONS),
             DEFAULT_LIMIT_NOTIFICATIONS,
@@ -3847,6 +3884,9 @@ class TrayController(QObject):
         if self.last_result is not None:
             self.window.render(self.last_result)
         self._update_tray_presentation()
+
+    def _current_theme(self) -> str:
+        return str(self.settings.value("theme", "system"))
 
     def _apply_theme(self) -> None:
         theme = str(self.settings.value("theme", "system"))

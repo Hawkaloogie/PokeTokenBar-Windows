@@ -81,9 +81,36 @@ LIGHT = {
 }
 
 
+def windows_prefers_dark() -> bool:
+    """Whether Windows is set to a dark app theme. Defaults to dark if unknown."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        ) as key:
+            value, _kind = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        return int(value) == 0
+    except (ImportError, OSError, ValueError, TypeError):
+        return True
+
+
+def resolve_mode(mode: str) -> str:
+    """Turn a stored setting into a concrete 'light' or 'dark'.
+
+    'system' actually asks Windows rather than assuming dark, which is what it
+    used to do - so Follow Windows never followed anything.
+    """
+    normalized = str(mode).strip().lower()
+    if normalized in ("light", "dark"):
+        return normalized
+    return "dark" if windows_prefers_dark() else "light"
+
+
 def palette(mode: str) -> dict:
-    """Tokens for a theme name. Anything unknown follows the dark palette."""
-    return LIGHT if str(mode).strip().lower() == "light" else DARK
+    """Tokens for a theme name, resolving 'system' against Windows."""
+    return LIGHT if resolve_mode(mode) == "light" else DARK
 
 
 def build_stylesheet(mode: str) -> str:

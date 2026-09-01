@@ -165,7 +165,7 @@ def claude_block_reset(now: datetime | None = None) -> datetime | None:
     an honest blank beats a made-up time when someone is pacing against a limit.
     """
     current = now or datetime.now().astimezone()
-    horizon = current - CLAUDE_BLOCK_WINDOW * 2
+    horizon = current - CLAUDE_BLOCK_WINDOW * 4
     stamps: list[datetime] = []
     for root in claude_roots():
         try:
@@ -198,16 +198,37 @@ def claude_block_reset(now: datetime | None = None) -> datetime | None:
     if not stamps:
         return None
     stamps.sort()
+    # A block opens at the first message after the previous one lapsed, and
+    # runs five hours. Under continuous use it therefore ROLLS repeatedly -
+    # the earlier version found the first block after a long gap and returned
+    # its end, which is why it reported a reset hours in the past.
     start = stamps[0]
-    for earlier, later in zip(stamps, stamps[1:]):
-        if later - earlier >= CLAUDE_BLOCK_WINDOW:
-            start = later
-    reset = start + CLAUDE_BLOCK_WINDOW
-    return reset if reset > current else None
+    while True:
+        end = start + CLAUDE_BLOCK_WINDOW
+        if end > current:
+            return end
+        following = [stamp for stamp in stamps if stamp >= end]
+        if not following:
+            # The block lapsed and nothing has been sent since, so the next one
+            # has not opened yet and there is nothing honest to show.
+            return None
+        start = following[0]
+
+
+# The model is right - a window opens at your first message and runs five
+# hours - and the rolling bug below is fixed. It is still switched OFF because
+# the derivation can only see Claude CODE transcripts, while Claude DESKTOP
+# usage counts toward the same window and exposes only aggregated samples with
+# no message times. If Desktop opened the block first, the start is invisible
+# here and the answer is early. Left disabled until a real reset time can be
+# compared against it; a wrong reset is worse than a missing one.
+DERIVED_RESET_ENABLED = False
 
 
 def _fill_missing_reset(limits: ProviderLimits) -> ProviderLimits:
     """Give the 5-hour window a derived reset when the API did not supply one."""
+    if not DERIVED_RESET_ENABLED:
+        return limits
     if not limits.windows:
         return limits
     if not any(

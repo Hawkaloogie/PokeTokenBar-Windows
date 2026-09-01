@@ -160,7 +160,21 @@ class ClaudeBlockResetTests(unittest.TestCase):
 
 
 class FillMissingResetTests(unittest.TestCase):
-    def test_a_derived_reset_is_flagged_as_an_estimate(self) -> None:
+    def test_the_derivation_is_disabled_because_it_did_not_match_anthropic(self) -> None:
+        """It disagreed with Claude's own usage page, so it must not be shown."""
+        self.assertFalse(limits_module.DERIVED_RESET_ENABLED)
+        derived = datetime.now().astimezone() + timedelta(hours=3)
+        limits = ProviderLimits(
+            provider="claude", windows=[LimitWindow("5-hour", 50.0)]
+        )
+        with patch.object(limits_module, "claude_block_reset", lambda: derived):
+            filled = limits_module._fill_missing_reset(limits)
+        self.assertIsNone(
+            filled.windows[0].resets_at,
+            "a reset time that disagrees with Anthropic must never be displayed",
+        )
+
+    def _disabled_test_a_derived_reset_is_flagged_as_an_estimate(self) -> None:
         derived = datetime.now().astimezone() + timedelta(hours=3)
         limits = ProviderLimits(
             provider="claude",
