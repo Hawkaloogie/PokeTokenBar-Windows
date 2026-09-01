@@ -156,7 +156,7 @@ def recover_pet_position(
     usable = [screen for screen in screens if screen.width > 0 and screen.height > 0]
     if not usable:
         return (round(px), round(py))
-    overlaps = [(screen.overlap_area(px, py, pet_size), screen) for screen in usable]
+    overlaps = [(screen.overlap_area(px, py, pet_width), screen) for screen in usable]
     area, target = max(overlaps, key=lambda item: item[0])
     if area <= 0:
         target = min(usable, key=lambda screen: screen.distance_squared(px, py))

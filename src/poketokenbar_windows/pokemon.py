@@ -75,7 +75,8 @@ def generation_label(species_id: int) -> str:
 
 def normalize_generation(value: Any) -> int | None:
     """Coerce a stored value into a valid generation number, else None (= All)."""
-    if value is None:
+    if value is None or isinstance(value, bool):
+        # bool is an int subclass, so True would otherwise become "Gen 1".
         return None
     try:
         number = int(value)

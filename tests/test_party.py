@@ -29,8 +29,10 @@ class FakeAPI:
 
     def __init__(self, base_id: int = 10) -> None:
         self.base_id = base_id
+        self.rarities_requested: list = []
 
     def hatch(self, minimum_rarity=None, shiny_charm=False, generation=None):
+        self.rarities_requested.append(minimum_rarity)
         result = HatchResult(
             base_id=self.base_id,
             path_ids=[self.base_id],
@@ -124,13 +126,34 @@ class SwapMainTests(unittest.TestCase):
             self.assertFalse(swap_main(state, slot))
         self.assertEqual(state.mon.base_id, 1)
 
-    def test_egg_progress_is_not_handed_to_an_incoming_pokemon(self) -> None:
+    def test_egg_progress_is_parked_not_destroyed_and_never_leaks(self) -> None:
+        # Swapping used to zero egg_usage/egg_tier, silently destroying a tier
+        # the player may have paid billions for. It must be parked instead -
+        # and it must still not leak into the incoming Pokemon's counter.
         state = GameState()
-        state.egg_usage = 4_000_000
+        state.egg_usage = 4_999_999
+        state.egg_tier = "legendary"
         state.party[0] = mon(7)
         swap_main(state, 0)
         self.assertEqual(state.mon.base_id, 7)
-        self.assertEqual(state.egg_usage, 0)
+        self.assertEqual(state.mon.used_at_stage, 0)
+        self.assertEqual(state.egg_usage, 4_999_999)
+        self.assertEqual(state.egg_tier, "legendary")
+
+    def test_a_parked_paid_egg_tier_is_still_honoured_when_it_finally_hatches(self) -> None:
+        # Park a paid legendary egg by swapping a bench Pokemon into the main
+        # slot, raise that one to graduation, and the parked tier must still be
+        # spent on a real legendary hatch rather than quietly discarded.
+        state = GameState()
+        state.egg_usage = 4_999_999
+        state.egg_tier = "legendary"
+        state.party[0] = mon(7)
+        swap_main(state, 0)
+        api = FakeAPI()
+        apply_usage(state, EGG_HATCH_THRESHOLD + 750_000_000, api)
+        self.assertIn("legendary", api.rarities_requested)
+        # Consumed by the hatch, not left dangling.
+        self.assertIsNone(state.egg_tier)
 
 
 class BenchEditingTests(unittest.TestCase):

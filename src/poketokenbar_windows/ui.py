@@ -143,6 +143,7 @@ from .state import (
     owned_representative_options,
     PARTY_BENCH_SIZE,
     assign_party_slot,
+    catch_in_use,
     clear_party_slot,
     party_members,
     representative_subject,
@@ -845,6 +846,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(blurb)
         self.party_grid = QGridLayout()
         self.party_grid.setSpacing(10)
+        # Equal columns so the bench reads as a tidy 3-wide rack and the main
+        # banner above it lines up with both outer edges.
+        for column in range(3):
+            self.party_grid.setColumnStretch(column, 1)
         layout.addLayout(self.party_grid)
         layout.addStretch(1)
         return root
@@ -865,9 +870,18 @@ class MainWindow(QMainWindow):
         heading.setStyleSheet("color: #2563eb; border: none;")
         heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(heading)
-        main_layout.addWidget(self._party_sprite(main, 96))
-        main_layout.addWidget(self._party_caption(main, "Egg - no main Pokemon yet"))
-        self.party_grid.addWidget(main_card, 0, 0, 1, 2)
+        main_sprite = self._party_sprite(main, 128)
+        main_layout.addWidget(main_sprite)
+        main_caption = self._party_caption(main, "Egg - no main Pokemon yet")
+        caption_font = main_caption.font()
+        caption_font.setBold(True)
+        caption_font.setPointSize(caption_font.pointSize() + 1)
+        main_caption.setFont(caption_font)
+        main_layout.addWidget(main_caption)
+        main_card.setMinimumHeight(220)
+        # Span all three columns so the main lines up flush with the bench rack
+        # instead of stopping two-thirds across.
+        self.party_grid.addWidget(main_card, 0, 0, 1, 3)
 
         for slot in range(PARTY_BENCH_SIZE):
             member = self.state.party[slot] if slot < len(self.state.party) else None
@@ -876,6 +890,7 @@ class MainWindow(QMainWindow):
             card.setStyleSheet(
                 "QFrame { border: 1px solid palette(mid); border-radius: 12px; }"
             )
+            card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             card_layout = QVBoxLayout(card)
             card_layout.addWidget(self._party_sprite(member, 56))
             card_layout.addWidget(self._party_caption(member, "Empty slot"))
@@ -896,8 +911,17 @@ class MainWindow(QMainWindow):
 
             if member is None:
                 picker = QComboBox()
+                # Without this the longest Pokedex entry dictates the whole
+                # column's minimum width and the bench rack comes out uneven.
+                picker.setSizeAdjustPolicy(
+                    QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+                )
+                picker.setMinimumContentsLength(10)
                 picker.addItem("Add from Pokedex...", None)
                 for position, catch in enumerate(self.state.catches):
+                    # Offering one already in the party would clone it.
+                    if catch_in_use(self.state, catch, ignore_slot=slot):
+                        continue
                     name = self.api.localized_name(catch.species_id, self.state.language)
                     prefix = "✨ " if catch.is_shiny else ""
                     picker.addItem(f"{prefix}#{catch.species_id:03d} {name}", position)
@@ -2726,6 +2750,13 @@ class TrayController(QObject):
                 )
             elif event.startswith("graduated:"):
                 self.window.celebrate("Your companion graduated! A new egg is ready.")
+            elif event.startswith("party_full:"):
+                # Without this the graduate silently misses the bench and the
+                # player has no way to know it is sitting in the Pokedex only.
+                self.window.celebrate(
+                    "Party is full - your graduate is waiting in the Pokedex. "
+                    "Free a bench slot in the Party tab to add it."
+                )
         limit_alerts, self.limit_alert_tiers = evaluate_limit_alerts(
             result.limits,
             self.limit_alert_tiers,

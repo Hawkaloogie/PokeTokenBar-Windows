@@ -8,6 +8,7 @@ from typing import Any
 
 from .pokemon import (
     EGG_HATCH_THRESHOLD,
+    GRADUATION_TOTALS,
     MINT_PRICE,
     NATURES,
     RARE_CANDY_PRICE,
@@ -21,7 +22,11 @@ from .pokemon import (
 from .windows import state_dir
 
 
-STATE_VERSION = 2
+# 3 adds `party` and `generation_filter`. An OLDER build loads a v3 file
+# without error but its save() re-serializes only the fields it knows about,
+# silently dropping both on its next autosave, so the loader keeps a one-time
+# backup when it sees a newer file than it understands.
+STATE_VERSION = 3
 
 # One main plus five benched companions, matching a six-slot game party.
 PARTY_BENCH_SIZE = 5
@@ -216,6 +221,75 @@ def companion_progress_percent(state: GameState) -> int:
     return min(100, max(0, value * 100 // max(1, target)))
 
 
+def _coerce_mon(raw: Any) -> MonState | None:
+    """Build a MonState from untrusted JSON, or None if it cannot be trusted.
+
+    Dataclasses do not validate types, so MonState(**item) happily accepts
+    path_ids="nonsense" and only explodes later inside the renderer, far from
+    the load. Every field is coerced and range-checked here so a bad record
+    degrades to an empty slot at load time instead of crashing the UI on the
+    next party action.
+    """
+    if not isinstance(raw, dict):
+        return None
+    try:
+        base_id = int(raw["base_id"])
+        path_source = raw["path_ids"]
+        if isinstance(path_source, (str, bytes)) or not isinstance(path_source, (list, tuple)):
+            return None
+        path_ids = [int(value) for value in path_source]
+        stage_index = int(raw["stage_index"])
+        used_at_stage = int(raw["used_at_stage"])
+        rarity = str(raw["rarity"])
+        nature = str(raw["nature"])
+        is_shiny = bool(raw["is_shiny"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if base_id <= 0 or not path_ids or any(value <= 0 for value in path_ids):
+        return None
+    if rarity not in GRADUATION_TOTALS:
+        return None
+    return MonState(
+        base_id=base_id,
+        path_ids=path_ids,
+        stage_index=max(0, min(stage_index, len(path_ids) - 1)),
+        used_at_stage=max(0, used_at_stage),
+        rarity=rarity,
+        is_shiny=is_shiny,
+        nature=nature,
+    )
+
+
+def _coerce_catch(raw: Any) -> CatchRecord | None:
+    """Same treatment for a Pokedex entry: degrade one row, never the archive."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        species_id = int(raw["species_id"])
+        base_id = int(raw["base_id"])
+        path_source = raw["path_ids"]
+        if isinstance(path_source, (str, bytes)) or not isinstance(path_source, (list, tuple)):
+            return None
+        path_ids = [int(value) for value in path_source]
+        rarity = str(raw["rarity"])
+        nature = str(raw["nature"])
+        caught_at = str(raw["caught_at"])
+        is_shiny = bool(raw["is_shiny"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if species_id <= 0 or base_id <= 0:
+        return None
+    return CatchRecord(
+        species_id=species_id,
+        base_id=base_id,
+        path_ids=path_ids or [species_id],
+        rarity=rarity,
+        is_shiny=is_shiny,
+        nature=nature,
+        caught_at=caught_at,
+    )
+
+
 def _load_party(raw: Any) -> list[MonState | None]:
     """Rebuild the bench from disk, tolerating junk, shortfalls and overflow.
 
@@ -225,13 +299,7 @@ def _load_party(raw: Any) -> list[MonState | None]:
     slots: list[MonState | None] = []
     if isinstance(raw, list):
         for item in raw[:PARTY_BENCH_SIZE]:
-            if not isinstance(item, dict):
-                slots.append(None)
-                continue
-            try:
-                slots.append(MonState(**item))
-            except (TypeError, ValueError):
-                slots.append(None)
+            slots.append(_coerce_mon(item))
     slots.extend([None] * (PARTY_BENCH_SIZE - len(slots)))
     return slots
 
@@ -249,9 +317,16 @@ class StateStore:
         if not isinstance(raw, dict):
             return GameState()
         try:
-            mon_raw = raw.get("mon")
-            mon = MonState(**mon_raw) if isinstance(mon_raw, dict) else None
-            catches = [CatchRecord(**item) for item in raw.get("catches", []) if isinstance(item, dict)]
+            mon = _coerce_mon(raw.get("mon"))
+            catch_source = raw.get("catches")
+            catches = [
+                record
+                for record in (
+                    _coerce_catch(item)
+                    for item in (catch_source if isinstance(catch_source, list) else [])
+                )
+                if record is not None
+            ]
             party = _load_party(raw.get("party"))
             representative_raw = raw.get("representative_species_id")
             try:
@@ -430,8 +505,9 @@ def apply_usage(state: GameState, delta: int, api: PokeAPIClient) -> list[str]:
             # put on the bench by hand once a slot is freed.
             events.append(f"party_full:{mon.current_id}")
         state.mon = None
-        state.egg_usage = 0
-        state.egg_tier = None
+        # egg_usage and egg_tier are consumed by the hatch branch above, so
+        # they are left alone here; clearing them would discard a paid tier the
+        # player parked by swapping, and forfeit egg progress they earned.
     return events
 
 
@@ -478,7 +554,13 @@ def buy_egg(state: GameState, tier: str | None) -> tuple[bool, str]:
         # The upstream Pokédex synthesizes the currently-raised Pokemon and only
         # persists it on graduation. Buying a fresh egg discards that active catch.
         last = state.catches[-1]
-        if last.base_id == state.mon.base_id and last.path_ids == state.mon.path_ids:
+        if (
+            last.base_id == state.mon.base_id
+            and last.path_ids == state.mon.path_ids
+            # Never drop an entry a benched companion still relies on, or the
+            # bench member becomes a ghost with no Pokedex record.
+            and not any(_identity(member) == _identity(last) for member in _normalize_party(state))
+        ):
             state.catches.pop()
     state.mon = None
     state.egg_usage = 0
@@ -542,11 +624,10 @@ def swap_main(state: GameState, slot: int) -> bool:
         return False
     state.party[slot] = state.mon
     state.mon = incoming
-    # The main slot drives egg progress; an empty main means a fresh egg, and
-    # the egg's accumulated usage must not silently transfer to a real Pokemon.
-    if state.mon is not None:
-        state.egg_usage = 0
-        state.egg_tier = None
+    # Egg progress and a paid egg tier are deliberately NOT cleared here.
+    # egg_usage only accrues while `mon` is None and is consumed at hatch, so
+    # parking it costs nothing - whereas zeroing it silently destroyed a tier
+    # the player may have paid billions of tokens for.
     normalize_representative(state)
     return True
 
@@ -569,10 +650,47 @@ def party_slot_from_catch(catch: CatchRecord) -> MonState:
     )
 
 
+def _identity(member: MonState | CatchRecord | None) -> tuple | None:
+    """A value that identifies one owned Pokemon across MonState/CatchRecord."""
+    if member is None:
+        return None
+    return (
+        int(member.base_id),
+        tuple(int(value) for value in (member.path_ids or [])),
+        bool(member.is_shiny),
+        str(member.nature),
+    )
+
+
+def catch_in_use(state: GameState, catch: CatchRecord, *, ignore_slot: int | None = None) -> bool:
+    """True when this Pokedex entry is already the main or sitting on the bench.
+
+    Without this the picker happily benches a second copy of the Pokemon that
+    is currently growing, producing two independent clones of one Pokemon.
+    """
+    target = _identity(catch)
+    if target is None:
+        return False
+    if _identity(state.mon) == target:
+        return True
+    for index, member in enumerate(_normalize_party(state)):
+        if index == ignore_slot:
+            continue
+        if _identity(member) == target:
+            return True
+    return False
+
+
 def assign_party_slot(state: GameState, slot: int, catch: CatchRecord) -> bool:
-    """Put an owned Pokedex entry onto a bench slot, replacing whatever is there."""
+    """Put an owned Pokedex entry onto a bench slot, replacing whatever is there.
+
+    Refuses if that Pokemon is already the main or already benched elsewhere -
+    one Pokemon must never occupy two slots at once.
+    """
     slots = _normalize_party(state)
     if not 0 <= slot < len(slots):
+        return False
+    if catch_in_use(state, catch, ignore_slot=slot):
         return False
     state.party[slot] = party_slot_from_catch(catch)
     normalize_representative(state)

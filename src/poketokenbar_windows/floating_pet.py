@@ -222,6 +222,9 @@ class FloatingPetWindow(QWidget):
         super().showEvent(event)
         apply_floating_tool_window_style(int(self.winId()))
 
+    def is_dragging(self) -> bool:
+        return self._dragging
+
     def set_pet_size(self, size: int) -> None:
         self.pet_size = normalize_pet_size(size)
         self._relayout()
@@ -757,7 +760,14 @@ class FloatingPetController(QObject):
         The window grows or shrinks with the bench, so reposition afterwards or
         a wider row can end up hanging off the edge of the screen.
         """
+        if list(paths) == list(self.pet.bench_paths):
+            return  # nothing changed; do not touch geometry on every refresh
         self.pet.set_bench(paths)
+        if self.pet.is_dragging():
+            # Repositioning mid-drag invalidates the drag anchor and makes the
+            # window jump on the next mouse-move. The drag's own release commit
+            # re-clamps, so it is safe to leave placement alone until then.
+            return
         self._save_position(self.pet.x(), self.pet.y())
 
     def set_snap_enabled(self, enabled: bool) -> None:
