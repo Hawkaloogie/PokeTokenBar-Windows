@@ -70,6 +70,9 @@ class LimitWindow:
     resets_at: datetime | None = None
     duration_minutes: int | None = None
     identifier: str | None = None
+    # True when resets_at was derived from local transcripts rather than
+    # reported by the API, so the UI can label it as an estimate.
+    estimated_reset: bool = False
 
     @property
     def remaining_percent(self) -> float:

@@ -10,11 +10,13 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from .models import LimitWindow, ProviderLimits, RateLimitResetCredit
+from .usage import claude_roots
 from .windows import (
     APP_NAME,
     claude_plan_usage_paths,
@@ -144,7 +146,86 @@ def _read_claude_local_limits(now: datetime | None = None) -> ProviderLimits | N
             windows.append(LimitWindow(label=label, used_percent=used))
     if not windows:
         return None
-    return ProviderLimits(provider="claude", windows=windows)
+    return _fill_missing_reset(ProviderLimits(provider="claude", windows=windows))
+
+
+CLAUDE_BLOCK_WINDOW = timedelta(hours=5)
+
+
+def claude_block_reset(now: datetime | None = None) -> datetime | None:
+    """Work out when the current 5-hour usage block resets.
+
+    Anthropic's usage response often omits resets_at, so derive it from the
+    local Claude Code transcripts instead: a block begins at the first message
+    after a gap of at least five hours, and ends five hours later. Only files
+    touched recently are read, so this stays cheap regardless of how much
+    history has accumulated.
+
+    Returns None when the block has already lapsed or nothing recent was found -
+    an honest blank beats a made-up time when someone is pacing against a limit.
+    """
+    current = now or datetime.now().astimezone()
+    horizon = current - CLAUDE_BLOCK_WINDOW * 2
+    stamps: list[datetime] = []
+    for root in claude_roots():
+        try:
+            if not root.exists():
+                continue
+            candidates = list(root.rglob("*.jsonl"))
+        except OSError:
+            continue
+        for path in candidates:
+            try:
+                if datetime.fromtimestamp(
+                    path.stat().st_mtime, tz=timezone.utc
+                ).astimezone() < horizon:
+                    continue
+                with open(path, encoding="utf-8", errors="ignore") as handle:
+                    for line in handle:
+                        if '"timestamp"' not in line:
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except (ValueError, json.JSONDecodeError):
+                            continue
+                        if not isinstance(obj, dict):
+                            continue
+                        stamp = _parse_datetime(obj.get("timestamp"))
+                        if stamp is not None and stamp >= horizon:
+                            stamps.append(stamp)
+            except OSError:
+                continue
+    if not stamps:
+        return None
+    stamps.sort()
+    start = stamps[0]
+    for earlier, later in zip(stamps, stamps[1:]):
+        if later - earlier >= CLAUDE_BLOCK_WINDOW:
+            start = later
+    reset = start + CLAUDE_BLOCK_WINDOW
+    return reset if reset > current else None
+
+
+def _fill_missing_reset(limits: ProviderLimits) -> ProviderLimits:
+    """Give the 5-hour window a derived reset when the API did not supply one."""
+    if not limits.windows:
+        return limits
+    if not any(
+        "5-hour" in window.label.lower() and window.resets_at is None
+        for window in limits.windows
+    ):
+        return limits
+    derived = claude_block_reset()
+    if derived is None:
+        return limits
+    # LimitWindow is frozen, so rebuild the affected entries.
+    rebuilt = [
+        replace(window, resets_at=derived, estimated_reset=True)
+        if "5-hour" in window.label.lower() and window.resets_at is None
+        else window
+        for window in limits.windows
+    ]
+    return replace(limits, windows=rebuilt)
 
 
 def _claude_fallback(error: str) -> ProviderLimits:

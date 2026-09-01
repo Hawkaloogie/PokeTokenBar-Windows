@@ -50,6 +50,7 @@ from poketokenbar_windows.pokemon import (
     rarity_from,
 )
 from poketokenbar_windows.state import (
+    confirm_evolution,
     GameState,
     StateStore,
     apply_limit_rewards,
@@ -276,8 +277,14 @@ class StateTests(unittest.TestCase):
         self.assertIsNotNone(state.mon)
         first = phase_threshold("common", 3, 0)
         events = apply_usage(state, first, FakeAPI())
+        # Evolution now waits for the player so they can watch it happen.
+        self.assertEqual(events, ["evolution_ready:2"])
+        self.assertTrue(state.pending_evolution)
+        self.assertEqual(state.mon.current_id, 1)
+        events = confirm_evolution(state, FakeAPI())
         self.assertEqual(events, ["evolved:2"])
         self.assertEqual(state.mon.current_id, 2)
+        self.assertFalse(state.pending_evolution)
 
     def test_limit_candy_is_once_per_window_after_initial_seed(self):
         state = GameState()

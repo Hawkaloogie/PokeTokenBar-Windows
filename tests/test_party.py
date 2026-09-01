@@ -17,6 +17,7 @@ from poketokenbar_windows.state import (
     apply_usage,
     assign_party_slot,
     clear_party_slot,
+    confirm_evolution,
     party_members,
     party_open_slot,
     party_slot_from_catch,
@@ -150,7 +151,11 @@ class SwapMainTests(unittest.TestCase):
         state.party[0] = mon(7)
         swap_main(state, 0)
         api = FakeAPI()
+        # mon(7) has two forms, so it now pauses for the player mid-way; confirm
+        # the evolution and let the rest of the tokens carry through to the egg.
         apply_usage(state, EGG_HATCH_THRESHOLD + 750_000_000, api)
+        while state.pending_evolution:
+            confirm_evolution(state, api)
         self.assertIn("legendary", api.rarities_requested)
         # Consumed by the hatch, not left dangling.
         self.assertIsNone(state.egg_tier)

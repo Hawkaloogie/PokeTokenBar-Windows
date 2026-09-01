@@ -24,6 +24,7 @@ from .formatting import (
 )
 from .pet_logic import (
     PET_ALERT_TTL_MS,
+    PetAlert,
     PET_DEFAULT_SIZE,
     ScreenRect,
     choose_pet_alert,
@@ -170,6 +171,51 @@ class AnimatedSpriteFrameStabilizer:
         return pixmap
 
 
+def _white_silhouette(pixmap: QPixmap) -> QPixmap:
+    """Flat white cut-out of a sprite - the classic evolution flash shape."""
+    if pixmap.isNull():
+        return pixmap
+    canvas = QPixmap(pixmap.size())
+    canvas.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(canvas)
+    painter.drawPixmap(0, 0, pixmap)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    painter.fillRect(canvas.rect(), QColor("#ffffff"))
+    painter.end()
+    return canvas
+
+
+def _draw_level_badge(pixmap: QPixmap, text: str) -> QPixmap:
+    """Stamp a small level badge into the sprite's bottom-right corner."""
+    if pixmap.isNull() or not text:
+        return pixmap
+    canvas = QPixmap(pixmap)
+    painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    font = painter.font()
+    size = max(7, round(canvas.height() * 0.13))
+    font.setPointSize(size)
+    font.setBold(True)
+    painter.setFont(font)
+    metrics = painter.fontMetrics()
+    pad_x = max(3, round(size * 0.5))
+    pad_y = max(1, round(size * 0.22))
+    width = metrics.horizontalAdvance(text) + pad_x * 2
+    height = metrics.height() + pad_y * 2
+    x = canvas.width() - width - 2
+    y = canvas.height() - height - 2
+    radius = height / 2.0
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(17, 24, 39, 216))
+    painter.drawRoundedRect(x, y, width, height, radius, radius)
+    painter.setPen(QPen(QColor("#f9fafb")))
+    painter.drawText(
+        x, y, width, height, Qt.AlignmentFlag.AlignCenter, text
+    )
+    painter.end()
+    return canvas
+
+
 class FloatingPetWindow(QWidget):
     clicked = Signal()
     hide_requested = Signal()
@@ -177,6 +223,7 @@ class FloatingPetWindow(QWidget):
     quit_requested = Signal()
     hover_changed = Signal(bool)
     position_committed = Signal(int, int)
+    evolution_finished = Signal()
 
     def __init__(self, size: int):
         flags = Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
@@ -213,6 +260,14 @@ class FloatingPetWindow(QWidget):
         self.pet_size = normalize_pet_size(size)
         self.bench_labels: list[QLabel] = []
         self.bench_paths: list[Path | None] = []
+        self.level_text: str = ""
+        self.evolution_timer = QTimer(self)
+        self.evolution_timer.setSingleShot(True)
+        self.evolution_timer.timeout.connect(self._advance_evolution)
+        self.evolution_steps: list[tuple[QPixmap, int]] = []
+        self.evolution_index = 0
+        self.evolution_final: QPixmap = QPixmap()
+        self.evolution_pixmap: QPixmap | None = None
         self._press_global: QPoint | None = None
         self._start_position: QPoint | None = None
         self._dragging = False
@@ -251,6 +306,39 @@ class FloatingPetWindow(QWidget):
             label.setGeometry(x, self.pet_size - small, small, small)
             label.show()
             x += small + gap
+
+    def set_level(self, text: str) -> None:
+        self.pet.set_level(text)
+
+    def show_evolution_prompt(self, text: str) -> None:
+        """A prompt that stays until the player acts - not a timed alert.
+
+        The point of gating evolution is that they get to watch it, so this must
+        not quietly expire the way limit alerts do.
+        """
+        self.bubble_timer.stop()
+        self.hover.hide()
+        self.bubble.set_alert(
+            PetAlert(
+                key="evolution-ready",
+                title="Ready to evolve!",
+                body=text,
+                severity="info",
+                tier=0,
+                priority=0.0,
+            )
+        )
+        self._position_auxiliary_windows()
+        self.bubble.show()
+        self.bubble.raise_()
+
+    def hide_evolution_prompt(self) -> None:
+        self.bubble_timer.stop()
+        self.bubble.hide()
+
+    def play_evolution(self, from_path: Path | None, to_path: Path | None) -> None:
+        self.hide_evolution_prompt()
+        self.pet.play_evolution(from_path, to_path)
 
     def set_bench(self, paths: list[Path | None]) -> None:
         """Show up to five smaller companions beside the main Pokemon."""
@@ -441,7 +529,68 @@ class FloatingPetWindow(QWidget):
         self.loading_frame = (self.loading_frame + 1) % 8
         self._render_current_frame()
 
+    def set_level(self, text: str) -> None:
+        """Level shown in the sprite's corner, e.g. 'Lv. 42'. Empty hides it."""
+        if text == self.level_text:
+            return
+        self.level_text = text or ""
+        self._render_current_frame()
+
+    def is_evolving(self) -> bool:
+        return bool(self.evolution_steps) or self.evolution_pixmap is not None
+
+    def play_evolution(self, from_path: Path | None, to_path: Path | None) -> None:
+        """Run the classic flash-between-forms evolution, then settle on the new one.
+
+        Alternates white silhouettes of the old and new forms, accelerating, so
+        the moment reads as a transformation rather than a swap.
+        """
+        size = self.pet_size
+        def load(path: Path | None) -> QPixmap:
+            if path is None or not path.exists():
+                return _pokeball_pixmap(size)
+            pix = QPixmap(str(path))
+            if pix.isNull():
+                return _pokeball_pixmap(size)
+            return pix.scaled(
+                size, size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+
+        before, after = load(from_path), load(to_path)
+        ghost_before, ghost_after = _white_silhouette(before), _white_silhouette(after)
+        steps: list[tuple[QPixmap, int]] = []
+        for interval in (260, 260, 210, 210, 165, 165, 125, 125, 95, 95, 70, 70, 55, 55):
+            steps.append((ghost_before if len(steps) % 2 == 0 else ghost_after, interval))
+        flash = QPixmap(before.size() if not before.isNull() else after.size())
+        flash.fill(QColor("#ffffff"))
+        steps.append((flash, 220))
+        steps.append((after, 420))
+        self.evolution_steps = steps
+        self.evolution_index = 0
+        self.evolution_final = after
+        self._advance_evolution()
+
+    def _advance_evolution(self) -> None:
+        if self.evolution_index >= len(self.evolution_steps):
+            self.evolution_steps = []
+            self.evolution_pixmap = None
+            self._render_current_frame()
+            self.evolution_finished.emit()
+            return
+        pixmap, interval = self.evolution_steps[self.evolution_index]
+        self.evolution_index += 1
+        self.evolution_pixmap = pixmap
+        self._render_current_frame()
+        self.evolution_timer.start(interval)
+
     def _render_current_frame(self, *_args) -> None:
+        if self.evolution_pixmap is not None:
+            self.label.setText("")
+            self.label.setStyleSheet("background: transparent;")
+            self.label.setPixmap(self.evolution_pixmap)
+            return
         if self.is_loading:
             self.label.setText("")
             self.label.setStyleSheet("background: transparent;")
@@ -467,11 +616,14 @@ class FloatingPetWindow(QWidget):
         self.label.setText("")
         self.label.setStyleSheet("background: transparent;")
         self.label.setPixmap(
-            pixmap.scaled(
-                self.pet_size,
-                self.pet_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.FastTransformation,
+            _draw_level_badge(
+                pixmap.scaled(
+                    self.pet_size,
+                    self.pet_size,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.FastTransformation,
+                ),
+                self.level_text,
             )
         )
 

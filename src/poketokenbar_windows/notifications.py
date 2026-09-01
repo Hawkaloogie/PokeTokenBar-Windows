@@ -114,6 +114,12 @@ def companion_notification(event: str, display_name: str) -> CompanionNotificati
         return CompanionNotification("Evolution!", display_name)
     if event.startswith("graduated:"):
         return CompanionNotification("Pokemon graduated!", "A new egg is ready.")
+    if event.startswith("evolution_ready:"):
+        return CompanionNotification(
+            "Ready to evolve!",
+            "Click your companion to watch it evolve.",
+            use_sprite_icon=True,
+        )
     if event.startswith("party_full:"):
         return CompanionNotification(
             "Party full",

@@ -155,6 +155,8 @@ from .state import (
     assign_party_slot,
     catch_in_use,
     clear_party_slot,
+    confirm_evolution,
+    evolution_target,
     party_members,
     representative_subject,
     reset_game_state,
@@ -789,6 +791,7 @@ class MainWindow(QMainWindow):
     party_assign_requested = Signal(int, object)
     reset_requested = Signal()
     pace_changed = Signal(object)
+    evolve_requested = Signal()
     preferences_changed = Signal()
     representative_changed = Signal(object)
     language_changed = Signal(str)
@@ -886,6 +889,14 @@ class MainWindow(QMainWindow):
         progress_stats.addWidget(self.progress_label)
         progress_stats.addStretch(1)
         progress_stats.addWidget(self.progress_percent_label)
+        self.evolve_button = QPushButton("Evolve now!")
+        self.evolve_button.setToolTip("Watch your companion evolve")
+        self.evolve_button.setStyleSheet(
+            "QPushButton { background: #2563eb; color: white; border-radius: 8px; "
+            "padding: 8px; font-weight: bold; }"
+        )
+        self.evolve_button.clicked.connect(self.evolve_requested.emit)
+        self.evolve_button.hide()
         self.progress = QProgressBar()
         self.progress.setRange(0, 1000)
         self.progress.setTextVisible(False)
@@ -894,6 +905,7 @@ class MainWindow(QMainWindow):
         meta.addWidget(self.detail_label)
         meta.addWidget(self.evolution_label)
         meta.addLayout(progress_stats)
+        meta.addWidget(self.evolve_button)
         meta.addWidget(self.progress)
         meta.addStretch(1)
         hero.addLayout(meta, 1)
@@ -1774,41 +1786,9 @@ class MainWindow(QMainWindow):
                 combo.blockSignals(False)
                 return
 
-    def render(self, result: RefreshResult) -> None:
-        self.setUpdatesEnabled(False)
-        self.state = result.state
-        snapshot = result.snapshot
-        self.today_card.value.setText(compact_tokens(snapshot.today_tokens))
-        self.cost_card.value.setText(money(snapshot.today_cost))
-        self.week_card.value.setText(compact_tokens(snapshot.week_tokens))
-        self.wallet_card.value.setText(compact_tokens(result.state.wallet))
-
-        self.providers_list.clear()
-        if not snapshot.providers:
-            self.providers_list.addItem("No supported local usage logs found yet")
-        for key, usage in sorted(snapshot.providers.items(), key=lambda item: item[1].today_tokens, reverse=True):
-            label = PROVIDER_LABELS.get(key, key.title())
-            self.providers_list.addItem(
-                f"{label}: {compact_tokens(usage.today_tokens)} today · "
-                f"{compact_tokens(usage.week_tokens)} week · {money(usage.today_cost)}"
-            )
-        for key in result.scan_errors:
-            self.providers_list.addItem(f"{PROVIDER_LABELS.get(key, key)}: local data is temporarily unavailable")
-        while self.providers_tabs.count() > 1:
-            page = self.providers_tabs.widget(1)
-            self.providers_tabs.removeTab(1)
-            page.deleteLater()
-        if len(snapshot.providers) > 1:
-            for key, usage in sorted(snapshot.providers.items()):
-                provider_list = QListWidget()
-                provider_list.addItem(f"Today · {compact_tokens(usage.today_tokens)}")
-                provider_list.addItem(f"This week · {compact_tokens(usage.week_tokens)}")
-                provider_list.addItem(f"This month · {compact_tokens(usage.month_tokens)}")
-                provider_list.addItem(f"Estimated cost today · {money(usage.today_cost)}")
-                self.providers_tabs.addTab(provider_list, PROVIDER_LABELS.get(key, key.title()))
-        self.providers_tabs.tabBar().setVisible(len(snapshot.providers) > 1)
-        self._fit_provider_panel()
-
+    def _populate_limits(self, limits_by_provider) -> None:
+        """Rebuild just the limits list, so a countdown can tick cheaply."""
+        self._last_limits = limits_by_provider
         self.limits_list.clear()
         any_limits = False
         time_mode = normalize_limit_time_mode(
@@ -1817,7 +1797,7 @@ class MainWindow(QMainWindow):
                 DEFAULT_LIMIT_TIME_MODE,
             )
         )
-        for key, limits in result.limits.items():
+        for key, limits in limits_by_provider.items():
             label = PROVIDER_LABELS.get(key, key.title())
             ordered_windows = ordered_limit_windows(limits)
             rows = provider_limit_rows(
@@ -1862,6 +1842,43 @@ class MainWindow(QMainWindow):
         if not any_limits:
             self.limits_list.addItem("No official limit data available")
 
+    def render(self, result: RefreshResult) -> None:
+        self.setUpdatesEnabled(False)
+        self.state = result.state
+        snapshot = result.snapshot
+        self.today_card.value.setText(compact_tokens(snapshot.today_tokens))
+        self.cost_card.value.setText(money(snapshot.today_cost))
+        self.week_card.value.setText(compact_tokens(snapshot.week_tokens))
+        self.wallet_card.value.setText(compact_tokens(result.state.wallet))
+
+        self.providers_list.clear()
+        if not snapshot.providers:
+            self.providers_list.addItem("No supported local usage logs found yet")
+        for key, usage in sorted(snapshot.providers.items(), key=lambda item: item[1].today_tokens, reverse=True):
+            label = PROVIDER_LABELS.get(key, key.title())
+            self.providers_list.addItem(
+                f"{label}: {compact_tokens(usage.today_tokens)} today · "
+                f"{compact_tokens(usage.week_tokens)} week · {money(usage.today_cost)}"
+            )
+        for key in result.scan_errors:
+            self.providers_list.addItem(f"{PROVIDER_LABELS.get(key, key)}: local data is temporarily unavailable")
+        while self.providers_tabs.count() > 1:
+            page = self.providers_tabs.widget(1)
+            self.providers_tabs.removeTab(1)
+            page.deleteLater()
+        if len(snapshot.providers) > 1:
+            for key, usage in sorted(snapshot.providers.items()):
+                provider_list = QListWidget()
+                provider_list.addItem(f"Today · {compact_tokens(usage.today_tokens)}")
+                provider_list.addItem(f"This week · {compact_tokens(usage.week_tokens)}")
+                provider_list.addItem(f"This month · {compact_tokens(usage.month_tokens)}")
+                provider_list.addItem(f"Estimated cost today · {money(usage.today_cost)}")
+                self.providers_tabs.addTab(provider_list, PROVIDER_LABELS.get(key, key.title()))
+        self.providers_tabs.tabBar().setVisible(len(snapshot.providers) > 1)
+        self._fit_provider_panel()
+
+        self._populate_limits(result.limits)
+
         self.name_label.setText(result.display_name)
         if result.state.mon is None:
             self.detail_label.setText("Pokemon Egg" + (f" · {result.state.egg_tier.title()}+" if result.state.egg_tier else ""))
@@ -1886,8 +1903,20 @@ class MainWindow(QMainWindow):
         self.progress.setValue(round(ratio * 1000))
         self.progress_label.setText(f"{compact_tokens(value)} / {compact_tokens(target)}")
         self.progress_percent_label.setText(
-            companion_level_text(round(ratio * 100))
+            companion_level_text(companion_progress_percent(self.state))
         )
+        waiting = bool(self.state.pending_evolution)
+        self.evolve_button.setVisible(waiting)
+        if waiting:
+            target = evolution_target(self.state)
+            name = (
+                self.api.localized_name(target, self.state.language)
+                if target else "its next form"
+            )
+            self.evolve_button.setText(f"Evolve into {name}!")
+            self.detail_label.setText(
+                "Ready to evolve - click when you want to watch it happen."
+            )
         self._render_collection()
         self._render_bag_shop()
         self.refresh_button.setEnabled(True)
@@ -1941,10 +1970,11 @@ class MainWindow(QMainWindow):
                 time_mode,
                 now,
             )
+            if getattr(window, "estimated_reset", False):
+                # Derived from local transcripts, not reported by the API - say
+                # so rather than passing an estimate off as an exact time.
+                detail += " (est.)"
         else:
-            # Anthropic's usage response does not always carry a reset
-            # timestamp. Say so rather than inventing one - a wrong reset time
-            # is worse than a missing one when you are pacing against a limit.
             detail = "resets: not reported"
         if settings_bool(
             self.settings.value(
@@ -2494,6 +2524,14 @@ class TrayController(QObject):
         self.window.export_requested.connect(self._export_state)
         self.window.import_requested.connect(self._import_state)
         self._wire_shop_buttons()
+        # The usage refresh is minutes apart; tick the reset countdown between
+        # them so it reads as a live timer rather than a stale stamp.
+        self.countdown_timer = QTimer(self)
+        self.countdown_timer.setInterval(30_000)
+        self.countdown_timer.timeout.connect(self._tick_countdown)
+        self.countdown_timer.start()
+        self.floating_pet.pet.evolution_finished.connect(self._finish_evolution)
+        self.window.evolve_requested.connect(self.start_evolution)
         QTimer.singleShot(0, self.run_setup_if_needed)
         self._apply_theme()
 
@@ -2521,7 +2559,7 @@ class TrayController(QObject):
         self.floating_pet = FloatingPetController(
             self.app,
             self.settings,
-            self.show_window,
+            self._pet_clicked,
             on_refresh=self.refresh,
             on_quit=self.quit,
             warning_percent=self.warning_threshold,
@@ -2871,9 +2909,68 @@ class TrayController(QObject):
             )
         return paths
 
+    def _tick_countdown(self) -> None:
+        """Re-render only the limits list so 'resets in ...' stays current."""
+        last = getattr(self.window, "_last_limits", None)
+        if last:
+            self.window._populate_limits(last)
+
+    def _pet_clicked(self) -> None:
+        """Clicking a companion that is ready to evolve plays the evolution."""
+        if self.state.pending_evolution:
+            self.start_evolution()
+            return
+        self.show_window()
+
+    def start_evolution(self) -> None:
+        """Play the animation now; commit the change when it finishes.
+
+        Committing only at the end means quitting mid-animation leaves the
+        evolution still pending rather than skipping the moment entirely.
+        """
+        target = evolution_target(self.state)
+        mon = self.state.mon
+        if target is None or mon is None or self.floating_pet.pet.is_evolving():
+            return
+        before = self.api.sprite_path(mon.current_id, shiny=mon.is_shiny, animated=False)
+        after = self.api.sprite_path(target, shiny=mon.is_shiny, animated=False)
+        self.floating_pet.play_evolution(before, after)
+
+    def _finish_evolution(self) -> None:
+        if not self.state.pending_evolution:
+            return
+        try:
+            with self.state_lock:
+                candidate = copy.deepcopy(self.state)
+                events = confirm_evolution(candidate, self.api)
+                self.store.save(candidate)
+                self.state = candidate
+        except Exception:  # noqa: BLE001
+            QMessageBox.warning(
+                self.window, "PokeTokenBar", "The evolution could not be saved."
+            )
+            return
+        for event in events:
+            if event.startswith("evolved:"):
+                self.window.celebrate(f"It evolved into {self.api.localized_name(int(event.split(':')[1]), self.state.language)}!")
+        self.window.set_state(self.state)
+        self.refresh()
+
     def _update_companion_surfaces(self, result: RefreshResult) -> None:
         self.floating_pet.update(result)
         self.floating_pet.set_bench(self._bench_sprite_paths())
+        self.floating_pet.set_level(
+            companion_level_text(companion_progress_percent(result.state))
+        )
+        if result.state.pending_evolution and not self.floating_pet.pet.is_evolving():
+            target = evolution_target(result.state)
+            name = (
+                self.api.localized_name(target, result.state.language)
+                if target else "its next form"
+            )
+            self.floating_pet.show_evolution_prompt(f"Click to evolve into {name}")
+        elif not result.state.pending_evolution:
+            self.floating_pet.hide_evolution_prompt()
         self.tray.setIcon(
             _icon_from_sprite(result.pet_sprite_path, fallback_egg=result.pet_is_egg)
         )
@@ -3112,6 +3209,10 @@ class TrayController(QObject):
                 )
             elif event.startswith("graduated:"):
                 self.window.celebrate("Your companion graduated! A new egg is ready.")
+            elif event.startswith("evolution_ready:"):
+                self.window.celebrate(
+                    "Your companion is ready to evolve - click it to watch!"
+                )
             elif event.startswith("party_full:"):
                 # Without this the graduate silently misses the bench and the
                 # player has no way to know it is sitting in the Pokedex only.

@@ -102,6 +102,11 @@ class GameState:
     # Scales the whole token economy together. Light Claude users would wait
     # months for a single hatch at the standard pace.
     pace: str = DEFAULT_PACE
+    # True once the companion has filled its stage and is waiting for the player
+    # to click and watch it evolve. Tokens earned meanwhile are banked, not
+    # burned, so waiting to watch never costs progress.
+    pending_evolution: bool = False
+    banked_tokens: int = 0
 
     @property
     def wallet(self) -> int:
@@ -228,6 +233,8 @@ def companion_progress_percent(state: GameState) -> int:
     else:
         mon = state.mon
         value = mon.used_at_stage
+        if state.pending_evolution:
+            return 100
         target = phase_threshold(
             mon.rarity, len(mon.path_ids), mon.stage_index, state.pace
         )
@@ -376,6 +383,8 @@ class StateStore:
                 # A save written before the questionnaire existed is treated as
                 # already answered, so an existing player is never ambushed by it.
                 pace=normalize_pace(raw.get("pace")),
+                pending_evolution=bool(raw.get("pending_evolution", False)),
+                banked_tokens=max(0, int(raw.get("banked_tokens", 0) or 0)),
                 setup_completed=bool(
                     raw.get("setup_completed", bool(mon is not None or catches))
                 ),
@@ -510,13 +519,17 @@ def apply_usage(state: GameState, delta: int, api: PokeAPIClient) -> list[str]:
         remaining -= take
         if mon.used_at_stage < threshold:
             break
-        mon.used_at_stage = 0
         if mon.stage_index < len(mon.path_ids) - 1:
-            mon.stage_index += 1
-            if state.catches:
-                state.catches[-1].species_id = mon.current_id
-            events.append(f"evolved:{mon.current_id}")
-            continue
+            # Hold at a full bar rather than evolving behind the player's back.
+            # Everything earned from here is banked and spent the moment they
+            # click, so watching the animation never costs them progress.
+            if not state.pending_evolution:
+                state.pending_evolution = True
+                events.append(f"evolution_ready:{mon.path_ids[mon.stage_index + 1]}")
+            state.banked_tokens += remaining
+            remaining = 0
+            break
+        mon.used_at_stage = 0
 
         # Final form completed: bench it if there is room, then start a fresh
         # egg so incoming tokens always have somewhere to go. Overflow carries.
@@ -764,6 +777,39 @@ def start_with_species(state: GameState, species_id: int, api: PokeAPIClient) ->
     ))
     normalize_representative(state)
     return True
+
+
+def confirm_evolution(state: GameState, api: PokeAPIClient) -> list[str]:
+    """Perform the evolution the player just chose to watch.
+
+    Spends anything banked while they waited, so a long pause before clicking
+    can carry straight on into the next stage.
+    """
+    mon = state.mon
+    if mon is None or not state.pending_evolution:
+        return []
+    state.pending_evolution = False
+    if mon.stage_index >= len(mon.path_ids) - 1:
+        return []
+    mon.stage_index += 1
+    mon.used_at_stage = 0
+    if state.catches:
+        state.catches[-1].species_id = mon.current_id
+    events = [f"evolved:{mon.current_id}"]
+    banked, state.banked_tokens = state.banked_tokens, 0
+    if banked > 0:
+        events.extend(apply_usage(state, banked, api))
+    return events
+
+
+def evolution_target(state: GameState) -> int | None:
+    """Species the companion is waiting to become, if it is waiting."""
+    mon = state.mon
+    if mon is None or not state.pending_evolution:
+        return None
+    if mon.stage_index >= len(mon.path_ids) - 1:
+        return None
+    return mon.path_ids[mon.stage_index + 1]
 
 
 def set_pace(state: GameState, pace: Any) -> str:
