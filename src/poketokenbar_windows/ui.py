@@ -2419,7 +2419,6 @@ class MainWindow(QMainWindow):
         self._render_collection()
         self._render_party()
         self._render_trades()
-        self._render_trades()
 
     def _select_pace(self, pace: str) -> None:
         combo = getattr(self, "pace_combo", None)
@@ -2646,6 +2645,9 @@ class MainWindow(QMainWindow):
         self._render_collection()
         self._render_bag_shop()
         self._render_party()
+        # The refresh path must draw the trade board too, or it is only ever
+        # populated when some other action happens to call set_state.
+        self._render_trades()
         self.refresh_button.setEnabled(True)
         stamp = snapshot.scanned_at.astimezone().strftime("%H:%M") if snapshot.scanned_at else "now"
         self.refresh_status.setText(("Updated with warnings · " if result.scan_errors else "Updated · ") + stamp)

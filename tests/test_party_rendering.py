@@ -128,5 +128,68 @@ class PartyRenderingTests(unittest.TestCase):
         self.assertEqual(window.party_grid.count(), PARTY_TOTAL_SIZE)
 
 
+
+class TradesRenderingTests(unittest.TestCase):
+    """The Trades board must draw on the refresh path, like the Party tab.
+
+    Reported twice: trades vanished. The second cause was that
+    _render_trades() was called twice in set_state() and not at all in
+    render(), so the board was only ever drawn when some other action happened
+    to call set_state - never on a plain refresh.
+    """
+
+    counter = 0
+
+    def setUp(self) -> None:
+        self.app = _app()
+        from poketokenbar_windows.pokemon import PokeAPIClient
+        from poketokenbar_windows.windows import cache_dir
+        self.api = PokeAPIClient(cache_dir())
+
+    def _state(self) -> GameState:
+        from poketokenbar_windows.state import refresh_trades
+        state = GameState()
+        state.mon = mon(4)
+        refresh_trades(state, self.api, "render-test")
+        return state
+
+    def _window(self, state: GameState) -> MainWindow:
+        TradesRenderingTests.counter += 1
+        key = f"PTBTradeRender{TradesRenderingTests.counter}"
+        return MainWindow(state, QSettings(key, key), self.api)
+
+    def _result(self, state: GameState) -> RefreshResult:
+        return RefreshResult(
+            UsageSnapshot(providers={"claude": ProviderUsage("claude", today_tokens=10)}),
+            {}, {}, state, [], None, "Pokemon",
+        )
+
+    def test_the_refresh_path_draws_the_trade_board(self) -> None:
+        state = self._state()
+        self.assertEqual(len(state.trade_offers), 3, "fixture needs offers")
+        window = self._window(state)
+        window.render(self._result(state))
+        self.app.processEvents()
+        self.assertEqual(
+            window.trades_list.count(), len(state.trade_offers),
+            "the trade board was blank after a refresh",
+        )
+
+    def test_set_state_draws_it_too(self) -> None:
+        state = self._state()
+        window = self._window(state)
+        window.set_state(state)
+        self.app.processEvents()
+        self.assertEqual(window.trades_list.count(), len(state.trade_offers))
+
+    def test_an_empty_board_shows_the_empty_message(self) -> None:
+        state = GameState()
+        state.mon = mon(4)
+        window = self._window(state)
+        window.render(self._result(state))
+        self.app.processEvents()
+        self.assertEqual(window.trades_list.count(), 0)
+        self.assertFalse(window.trades_empty.isHidden())
+
 if __name__ == "__main__":
     unittest.main()
