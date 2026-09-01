@@ -901,9 +901,6 @@ class MainWindow(QMainWindow):
                     name = self.api.localized_name(catch.species_id, self.state.language)
                     prefix = "✨ " if catch.is_shiny else ""
                     picker.addItem(f"{prefix}#{catch.species_id:03d} {name}", position)
-                picker.currentIndexChanged.connect(
-                    lambda _index=0, combo=None, target=slot: None
-                )
                 picker.activated.connect(
                     lambda _index, combo=picker, target=slot: (
                         self.party_assign_requested.emit(target, combo.currentData())
