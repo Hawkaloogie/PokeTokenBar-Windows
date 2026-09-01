@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .pokemon import (
+    DEFAULT_PACE,
     EGG_HATCH_THRESHOLD,
     GRADUATION_TOTALS,
     MINT_PRICE,
@@ -16,8 +17,12 @@ from .pokemon import (
     SHINY_CHARM_PRICE,
     PokeAPIClient,
     egg_price,
+    egg_hatch_threshold,
+    item_price,
     normalize_generation,
+    normalize_pace,
     phase_threshold,
+    rare_candy_xp,
 )
 from .windows import state_dir
 
@@ -94,6 +99,9 @@ class GameState:
     # False until the first-run questionnaire has been answered. Reset clears
     # it so the questionnaire runs again on the next launch.
     setup_completed: bool = False
+    # Scales the whole token economy together. Light Claude users would wait
+    # months for a single hatch at the standard pace.
+    pace: str = DEFAULT_PACE
 
     @property
     def wallet(self) -> int:
@@ -216,11 +224,13 @@ def companion_progress_percent(state: GameState) -> int:
     """Return whole-percent progress for the active egg or Pokemon stage."""
     if state.mon is None:
         value = state.egg_usage
-        target = EGG_HATCH_THRESHOLD
+        target = egg_hatch_threshold(state.pace)
     else:
         mon = state.mon
         value = mon.used_at_stage
-        target = phase_threshold(mon.rarity, len(mon.path_ids), mon.stage_index)
+        target = phase_threshold(
+            mon.rarity, len(mon.path_ids), mon.stage_index, state.pace
+        )
     return min(100, max(0, value * 100 // max(1, target)))
 
 
@@ -365,6 +375,7 @@ class StateStore:
                 party=party,
                 # A save written before the questionnaire existed is treated as
                 # already answered, so an existing player is never ambushed by it.
+                pace=normalize_pace(raw.get("pace")),
                 setup_completed=bool(
                     raw.get("setup_completed", bool(mon is not None or catches))
                 ),
@@ -455,11 +466,11 @@ def apply_usage(state: GameState, delta: int, api: PokeAPIClient) -> list[str]:
     remaining = max(0, delta)
     while remaining > 0:
         if state.mon is None:
-            need = max(0, EGG_HATCH_THRESHOLD - state.egg_usage)
+            need = max(0, egg_hatch_threshold(state.pace) - state.egg_usage)
             take = min(remaining, need)
             state.egg_usage += take
             remaining -= take
-            if state.egg_usage < EGG_HATCH_THRESHOLD:
+            if state.egg_usage < egg_hatch_threshold(state.pace):
                 break
             hatch = api.hatch(
                 minimum_rarity=state.egg_tier,
@@ -490,7 +501,9 @@ def apply_usage(state: GameState, delta: int, api: PokeAPIClient) -> list[str]:
             continue
 
         mon = state.mon
-        threshold = phase_threshold(mon.rarity, len(mon.path_ids), mon.stage_index)
+        threshold = phase_threshold(
+            mon.rarity, len(mon.path_ids), mon.stage_index, state.pace
+        )
         need = max(0, threshold - mon.used_at_stage)
         take = min(remaining, need)
         mon.used_at_stage += take
@@ -520,7 +533,10 @@ def apply_usage(state: GameState, delta: int, api: PokeAPIClient) -> list[str]:
 
 
 def buy_item(state: GameState, item: str) -> tuple[bool, str]:
-    prices = {"rare_candy": RARE_CANDY_PRICE, "mint": MINT_PRICE, "shiny_charm": SHINY_CHARM_PRICE}
+    prices = {
+        item: item_price(item, state.pace)
+        for item in ("rare_candy", "mint", "shiny_charm")
+    }
     if item not in prices:
         return False, "Unknown item"
     if item == "shiny_charm" and state.shiny_charm_active:
@@ -538,7 +554,7 @@ def use_item(state: GameState, item: str, api: PokeAPIClient) -> tuple[bool, str
         return False, "Item not in bag", []
     if item == "rare_candy":
         state.inventory[item] -= 1
-        events = apply_usage(state, RARE_CANDY_XP, api)
+        events = apply_usage(state, rare_candy_xp(state.pace), api)
         return True, "Rare Candy used", events
     if item == "mint":
         if state.mon is None:
@@ -554,7 +570,7 @@ def use_item(state: GameState, item: str, api: PokeAPIClient) -> tuple[bool, str
 
 
 def buy_egg(state: GameState, tier: str | None) -> tuple[bool, str]:
-    price = egg_price(tier)
+    price = egg_price(tier, state.pace)
     if state.wallet < price:
         return False, "Not enough tokens"
     state.spent_tokens += price
@@ -748,6 +764,16 @@ def start_with_species(state: GameState, species_id: int, api: PokeAPIClient) ->
     ))
     normalize_representative(state)
     return True
+
+
+def set_pace(state: GameState, pace: Any) -> str:
+    """Change the economy pace. Progress already earned is kept as-is.
+
+    Thresholds are read live, so lowering the pace can immediately complete a
+    stage the player had already paid for - which is the generous direction.
+    """
+    state.pace = normalize_pace(pace)
+    return state.pace
 
 
 def set_generation_filter(state: GameState, generation: Any) -> int | None:

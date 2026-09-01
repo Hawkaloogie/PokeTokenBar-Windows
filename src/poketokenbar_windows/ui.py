@@ -131,9 +131,14 @@ from .pokemon import (
     GENERATIONS,
     PokeAPIClient,
     egg_price,
+    PACE_LABELS,
+    generation_cap_label,
     generation_label,
+    item_price,
     normalize_generation,
+    normalize_pace,
     starters_for,
+    starters_of_generation,
     phase_threshold,
 )
 from .state import (
@@ -152,6 +157,7 @@ from .state import (
     party_members,
     representative_subject,
     reset_game_state,
+    set_pace,
     start_with_species,
     set_generation_filter,
     swap_main,
@@ -676,15 +682,21 @@ class SetupDialog(QDialog):
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
-        gen_label = QLabel("Which generations should hatch?")
+        gen_label = QLabel("How far should the Pokedex go?")
         gf = gen_label.font(); gf.setBold(True); gen_label.setFont(gf)
         layout.addWidget(gen_label)
         self.generation_combo = QComboBox()
-        self.generation_combo.addItem("All generations (1-5)", None)
-        for number, region, low, high in GENERATIONS:
-            self.generation_combo.addItem(f"Gen {number} - {region} (#{low}-{high})", number)
+        self.generation_combo.addItem(generation_cap_label(None), None)
+        for number, _region, _low, _high in GENERATIONS:
+            self.generation_combo.addItem(generation_cap_label(number), number)
         self.generation_combo.currentIndexChanged.connect(lambda _i: self._reload_starters())
         layout.addWidget(self.generation_combo)
+        cap_note = QLabel(
+            "This is a cap - everything below it stays in the pool too."
+        )
+        cap_note.setWordWrap(True)
+        cap_note.setStyleSheet("color: palette(mid);")
+        layout.addWidget(cap_note)
 
         start_label = QLabel("How do you want to start?")
         sf = start_label.font(); sf.setBold(True); start_label.setFont(sf)
@@ -693,12 +705,22 @@ class SetupDialog(QDialog):
         self.starter_radio = QRadioButton("Pick an original starter")
         self.starter_radio.setChecked(True)
         layout.addWidget(self.starter_radio)
+
+        starter_row = QHBoxLayout()
+        starter_row.addWidget(QLabel("From"))
+        self.starter_generation_combo = QComboBox()
+        starter_row.addWidget(self.starter_generation_combo, 1)
+        layout.addLayout(starter_row)
+        self.starter_generation_combo.currentIndexChanged.connect(
+            lambda _i: self._reload_starter_names()
+        )
+
         self.starter_combo = QComboBox()
         layout.addWidget(self.starter_combo)
 
         self.random_radio = QRadioButton("Surprise me with a random Pokemon")
         layout.addWidget(self.random_radio)
-        self.starter_radio.toggled.connect(self.starter_combo.setEnabled)
+        self.starter_radio.toggled.connect(self._set_starter_controls_enabled)
 
         note = QLabel(
             "Only generations 1-5 are available - the animated sprites this app "
@@ -715,14 +737,35 @@ class SetupDialog(QDialog):
 
         self._reload_starters()
 
+    def _set_starter_controls_enabled(self, enabled: bool) -> None:
+        self.starter_generation_combo.setEnabled(enabled)
+        self.starter_combo.setEnabled(enabled)
+
     def _reload_starters(self) -> None:
+        """Offer starter generations up to the cap, then that gen's starters."""
+        cap = normalize_generation(self.generation_combo.currentData())
+        highest = cap if cap is not None else max(g[0] for g in GENERATIONS)
+        previous = self.starter_generation_combo.currentData()
+        self.starter_generation_combo.blockSignals(True)
+        self.starter_generation_combo.clear()
+        for number, region, _low, _high in GENERATIONS:
+            if number <= highest:
+                self.starter_generation_combo.addItem(f"Gen {number} - {region}", number)
+        if previous is not None:
+            index = self.starter_generation_combo.findData(previous)
+            if index >= 0:
+                self.starter_generation_combo.setCurrentIndex(index)
+        self.starter_generation_combo.blockSignals(False)
+        self._reload_starter_names()
+        self._set_starter_controls_enabled(self.starter_radio.isChecked())
+
+    def _reload_starter_names(self) -> None:
         self.starter_combo.clear()
-        for species_id in starters_for(self.generation_combo.currentData()):
+        generation = self.starter_generation_combo.currentData()
+        species = starters_of_generation(generation) if generation else starters_for(None)
+        for species_id in species:
             name = self.api.localized_name(species_id, self.language)
             self.starter_combo.addItem(f"#{species_id:03d} {name}", species_id)
-        # "All generations" offers all fifteen starters; a single generation
-        # offers its own three.
-        self.starter_combo.setEnabled(self.starter_radio.isChecked())
 
     def chosen_generation(self):
         return self.generation_combo.currentData()
@@ -744,6 +787,7 @@ class MainWindow(QMainWindow):
     party_clear_requested = Signal(int)
     party_assign_requested = Signal(int, object)
     reset_requested = Signal()
+    pace_changed = Signal(object)
     preferences_changed = Signal()
     representative_changed = Signal(object)
     language_changed = Signal(str)
@@ -1286,14 +1330,15 @@ class MainWindow(QMainWindow):
         hatch_group = QGroupBox("Hatching")
         hatch_layout = QVBoxLayout(hatch_group)
         generation_row = QHBoxLayout()
-        generation_row.addWidget(QLabel("Generation"))
+        generation_row.addWidget(QLabel("Highest generation"))
         self.generation_combo = QComboBox()
-        self.generation_combo.addItem("All generations (1-5)", None)
-        for number, region, low, high in GENERATIONS:
-            self.generation_combo.addItem(f"Gen {number} - {region} (#{low}-{high})", number)
+        self.generation_combo.addItem(generation_cap_label(None), None)
+        for number, _region, _low, _high in GENERATIONS:
+            self.generation_combo.addItem(generation_cap_label(number), number)
         self.generation_combo.setToolTip(
-            "Restrict future hatches to one generation. Applies to the next hatch; "
-            "a Pokemon already being raised is unaffected."
+            "Highest generation that can hatch. Everything below it stays in the "
+            "pool. Applies to the next hatch; a Pokemon already being raised is "
+            "unaffected."
         )
         self.generation_combo.currentIndexChanged.connect(
             lambda _index: self._save_generation_filter()
@@ -1301,13 +1346,40 @@ class MainWindow(QMainWindow):
         generation_row.addWidget(self.generation_combo, 1)
         hatch_layout.addLayout(generation_row)
         self.generation_note = QLabel(
-            "Only generations 1-5 are available - the animated sprite set this app "
-            "uses does not cover later generations."
+            "This is a cap: picking Gen 3 keeps Kanto and Johto in the pool too. "
+            "Only generations 1-5 exist here - the animated sprite set this app "
+            "uses does not cover later ones."
         )
         self.generation_note.setWordWrap(True)
         self.generation_note.setStyleSheet("color: palette(mid);")
         hatch_layout.addWidget(self.generation_note)
         layout.addWidget(hatch_group)
+
+        pace_group = QGroupBox("Pace")
+        pace_layout = QVBoxLayout(pace_group)
+        pace_row = QHBoxLayout()
+        pace_row.addWidget(QLabel("Token pace"))
+        self.pace_combo = QComboBox()
+        for key in ("standard", "light", "casual"):
+            self.pace_combo.addItem(PACE_LABELS[key], key)
+        self.pace_combo.setToolTip(
+            "Scales every cost together - hatching, growth and the shop."
+        )
+        self.pace_combo.currentIndexChanged.connect(
+            lambda _index: self.pace_changed.emit(self.pace_combo.currentData())
+        )
+        pace_row.addWidget(self.pace_combo, 1)
+        pace_layout.addLayout(pace_row)
+        self.pace_note = QLabel(
+            "If you use Claude Code casually, the standard pace makes a single "
+            "hatch take months. Casual and Light scale every cost down together "
+            "so progress stays visible. Nothing you have already earned is lost."
+        )
+        self.pace_note.setWordWrap(True)
+        self.pace_note.setStyleSheet("color: palette(mid);")
+        pace_layout.addWidget(self.pace_note)
+        layout.addWidget(pace_group)
+
         layout.addWidget(danger_group)
 
         tray_group = QGroupBox("Tray tooltip")
@@ -1643,9 +1715,24 @@ class MainWindow(QMainWindow):
     def set_state(self, state: GameState) -> None:
         self.state = state
         self._sync_generation_combo()
+        self._sync_pace_combo()
         self._render_bag_shop()
         self._render_collection()
         self._render_party()
+
+    def _sync_pace_combo(self) -> None:
+        combo = getattr(self, "pace_combo", None)
+        if combo is None:
+            return
+        target = normalize_pace(self.state.pace)
+        if combo.currentData() == target:
+            return
+        for index in range(combo.count()):
+            if combo.itemData(index) == target:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(index)
+                combo.blockSignals(False)
+                return
 
     def _sync_generation_combo(self) -> None:
         combo = getattr(self, "generation_combo", None)
@@ -2271,14 +2358,28 @@ class MainWindow(QMainWindow):
             "" if self.use_mint_btn.isEnabled() else
             ("No Mint in your bag" if inv.get("mint", 0) <= 0 else "Hatch a Pokémon first")
         )
+        # Every price is derived from the current pace here, so a pace change
+        # can never leave a stale number on a button or in an affordability check.
+        pace = self.state.pace
         prices = {
-            self.buy_candy_btn: 500_000_000,
-            self.buy_mint_btn: 100_000_000,
-            self.buy_charm_btn: 3_000_000_000,
-            self.buy_egg_btn: egg_price(None),
-            self.buy_uncommon_egg_btn: egg_price("uncommon"),
-            self.buy_rare_egg_btn: egg_price("rare"),
+            self.buy_candy_btn: item_price("rare_candy", pace),
+            self.buy_mint_btn: item_price("mint", pace),
+            self.buy_charm_btn: item_price("shiny_charm", pace),
+            self.buy_egg_btn: egg_price(None, pace),
+            self.buy_uncommon_egg_btn: egg_price("uncommon", pace),
+            self.buy_rare_egg_btn: egg_price("rare", pace),
         }
+        nl = chr(10)
+        captions = {
+            self.buy_candy_btn: f"🍬 Rare Candy{nl}Progress boost",
+            self.buy_mint_btn: f"🌿 Mint{nl}Change nature",
+            self.buy_charm_btn: f"✨ Shiny Charm{nl}Better Shiny odds",
+            self.buy_egg_btn: f"🥚 Normal Egg{nl}Fresh companion",
+            self.buy_uncommon_egg_btn: f"🔵 Uncommon Egg{nl}Uncommon+",
+            self.buy_rare_egg_btn: f"🟣 Rare Egg{nl}Rare+",
+        }
+        for button, caption in captions.items():
+            button.setText(f"{caption} · {compact_tokens(prices[button])}")
         effects = {
             self.buy_candy_btn: "Adds progression to the active egg or companion",
             self.buy_mint_btn: "Changes the current companion's nature",
@@ -2360,6 +2461,7 @@ class TrayController(QObject):
         self.window.party_clear_requested.connect(self._clear_party_slot)
         self.window.party_assign_requested.connect(self._assign_party_slot)
         self.window.reset_requested.connect(self._reset_app)
+        self.window.pace_changed.connect(self._set_pace)
         self.window.preferences_changed.connect(self._preferences_changed)
         self.window.representative_changed.connect(self._set_representative)
         self.window.language_changed.connect(self._set_language)
@@ -2469,6 +2571,21 @@ class TrayController(QObject):
 
     def _set_pet_snap(self, enabled: bool) -> None:
         self.floating_pet.set_snap_enabled(bool(enabled))
+
+    def _set_pace(self, pace: object) -> None:
+        try:
+            with self.state_lock:
+                candidate = copy.deepcopy(self.state)
+                set_pace(candidate, pace)
+                self.store.save(candidate)
+                self.state = candidate
+        except Exception:  # noqa: BLE001
+            QMessageBox.warning(
+                self.window, "PokeTokenBar", "The pace could not be changed."
+            )
+            return
+        self.window.set_state(self.state)
+        self.refresh()
 
     def run_setup_if_needed(self) -> None:
         """Ask the first-run questions on a fresh game (or after a reset)."""

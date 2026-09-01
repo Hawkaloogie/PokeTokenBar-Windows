@@ -61,9 +61,19 @@ class NormalizeGenerationTests(unittest.TestCase):
     def test_bounds_for_all_is_the_whole_pool(self) -> None:
         self.assertEqual(generation_bounds(None), (GENERATION_MIN_ID, GENERATION_MAX_ID))
 
-    def test_bounds_for_a_generation_match_its_range(self) -> None:
-        for number, _region, low, high in GENERATIONS:
-            self.assertEqual(generation_bounds(number), (low, high))
+    def test_bounds_are_a_cap_that_includes_every_earlier_generation(self) -> None:
+        # Choosing Gen 3 must allow Kanto, Johto AND Hoenn - not Hoenn alone.
+        for number, _region, _low, high in GENERATIONS:
+            self.assertEqual(generation_bounds(number), (GENERATION_MIN_ID, high))
+
+    def test_a_higher_cap_is_always_a_superset_of_a_lower_one(self) -> None:
+        previous = None
+        for number, _region, _low, _high in GENERATIONS:
+            low, high = generation_bounds(number)
+            self.assertEqual(low, GENERATION_MIN_ID)
+            if previous is not None:
+                self.assertGreater(high, previous)
+            previous = high
 
     def test_bounds_for_an_unknown_generation_fall_back_to_all(self) -> None:
         self.assertEqual(generation_bounds(9), (GENERATION_MIN_ID, GENERATION_MAX_ID))
@@ -122,14 +132,19 @@ class HatchGenerationTests(unittest.TestCase):
             client.hatch(generation=generation, max_attempts=attempts)
         return recorder.seen
 
-    def test_rolls_stay_inside_the_requested_generation(self) -> None:
-        for number, _region, low, high in GENERATIONS:
+    def test_rolls_stay_at_or_below_the_generation_cap(self) -> None:
+        for number, _region, _low, high in GENERATIONS:
             rolls = self._rolls_for(number)
             self.assertTrue(rolls, "expected the hatcher to roll at least once")
             self.assertTrue(
-                all(low <= r <= high for r in rolls),
-                f"gen {number} rolled outside {low}-{high}",
+                all(GENERATION_MIN_ID <= r <= high for r in rolls),
+                f"cap {number} rolled outside {GENERATION_MIN_ID}-{high}",
             )
+
+    def test_a_cap_of_one_still_means_kanto_only(self) -> None:
+        rolls = self._rolls_for(1)
+        self.assertTrue(rolls)
+        self.assertTrue(all(1 <= r <= 151 for r in rolls))
 
     def test_all_generations_never_exceeds_the_pool(self) -> None:
         rolls = self._rolls_for(None, attempts=600)

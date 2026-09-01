@@ -33,6 +33,62 @@ NATURES = [
     "Calm", "Gentle", "Sassy", "Careful", "Quirky",
 ]
 
+# How fast the token economy runs. A heavy Claude Code user burns hundreds of
+# millions of tokens a day and finds the default pace fine; someone using it
+# casually would wait months for a single hatch. The divisor scales EVERY
+# token-denominated value together - thresholds, growth totals and shop prices -
+# so the game stays internally consistent at any pace.
+PACE_DIVISORS: dict[str, int] = {
+    "casual": 50,
+    "light": 10,
+    "standard": 1,
+}
+DEFAULT_PACE = "standard"
+PACE_LABELS: dict[str, str] = {
+    "casual": "Casual - light Claude use (50x cheaper)",
+    "light": "Light - occasional Claude use (10x cheaper)",
+    "standard": "Standard - heavy Claude use",
+}
+
+
+def normalize_pace(value: Any) -> str:
+    """Coerce a stored pace into a known one, defaulting to standard."""
+    if isinstance(value, str) and value in PACE_DIVISORS:
+        return value
+    return DEFAULT_PACE
+
+
+def pace_divisor(pace: Any = DEFAULT_PACE) -> int:
+    return PACE_DIVISORS[normalize_pace(pace)]
+
+
+def scaled(amount: int, pace: Any = DEFAULT_PACE) -> int:
+    """Apply the pace to one token amount. Never returns less than 1."""
+    return max(1, round(amount / pace_divisor(pace)))
+
+
+def egg_hatch_threshold(pace: Any = DEFAULT_PACE) -> int:
+    return scaled(EGG_HATCH_THRESHOLD, pace)
+
+
+def graduation_total(rarity: str, pace: Any = DEFAULT_PACE) -> int:
+    return scaled(GRADUATION_TOTALS[rarity], pace)
+
+
+def rare_candy_xp(pace: Any = DEFAULT_PACE) -> int:
+    return scaled(RARE_CANDY_XP, pace)
+
+
+def item_price(item: str, pace: Any = DEFAULT_PACE) -> int:
+    """Shop price for one item at the current pace."""
+    base = {
+        "rare_candy": RARE_CANDY_PRICE,
+        "mint": MINT_PRICE,
+        "shiny_charm": SHINY_CHARM_PRICE,
+    }[item]
+    return scaled(base, pace)
+
+
 RARITY_RANK = {"common": 0, "uncommon": 1, "rare": 2, "legendary": 3}
 
 # National Pokedex species-ID ranges. The hatch pool stops at #649 because the
@@ -52,7 +108,7 @@ GENERATION_MAX_ID = GENERATIONS[-1][3]
 # The three original starter Pokemon of each generation, in Pokedex order
 # (grass, fire, water) - the choice a real game opens with.
 STARTERS: dict[int, list[int]] = {
-    1: [1, 4, 7],        # Bulbasaur, Charmander, Squirtle
+    1: [1, 4, 7, 25],    # Bulbasaur, Charmander, Squirtle, Pikachu (Yellow)
     2: [152, 155, 158],  # Chikorita, Cyndaquil, Totodile
     3: [252, 255, 258],  # Treecko, Torchic, Mudkip
     4: [387, 390, 393],  # Turtwig, Chimchar, Piplup
@@ -61,11 +117,20 @@ STARTERS: dict[int, list[int]] = {
 
 
 def starters_for(generation: int | None) -> list[int]:
-    """Starter species for a generation, or every generation's starters."""
+    """Starters available under a cap: that generation's and every earlier one."""
     normalized = normalize_generation(generation)
-    if normalized is not None:
-        return list(STARTERS.get(normalized, []))
-    return [species for gen in sorted(STARTERS) for species in STARTERS[gen]]
+    cap = normalized if normalized is not None else max(STARTERS)
+    return [
+        species
+        for gen in sorted(STARTERS)
+        if gen <= cap
+        for species in STARTERS[gen]
+    ]
+
+
+def starters_of_generation(generation: int) -> list[int]:
+    """Just one generation's starters, for the questionnaire's second choice."""
+    return list(STARTERS.get(normalize_generation(generation) or 0, []))
 
 
 def generation_of(species_id: int) -> int | None:
@@ -105,11 +170,26 @@ def normalize_generation(value: Any) -> int | None:
 
 
 def generation_bounds(number: int | None) -> tuple[int, int]:
-    """Species-ID range to roll within: one generation, or the whole pool."""
-    for gen, _region, low, high in GENERATIONS:
+    """Species-ID range to roll within.
+
+    The generation setting is a CAP, not an exact match: choosing Gen 3 means
+    everything up to and including Hoenn can hatch, not Hoenn alone.
+    """
+    for gen, _region, _low, high in GENERATIONS:
         if gen == number:
-            return low, high
+            return GENERATION_MIN_ID, high
     return GENERATION_MIN_ID, GENERATION_MAX_ID
+
+
+def generation_cap_label(number: int | None) -> str:
+    """How the cap reads in the UI, e.g. 'Up to Gen 3 (Kanto-Hoenn)'."""
+    if normalize_generation(number) is None:
+        return "All generations (1-5)"
+    first = GENERATIONS[0][1]
+    region = generation_region(number)
+    if number == 1:
+        return f"Gen 1 only ({first})"
+    return f"Up to Gen {number} ({first}-{region})"
 
 
 def rarity_from(capture_rate: int, is_legendary: bool, is_mythical: bool) -> str:
@@ -122,17 +202,22 @@ def rarity_from(capture_rate: int, is_legendary: bool, is_mythical: bool) -> str
     return "common"
 
 
-def phase_threshold(rarity: str, total_forms: int, stage_index: int) -> int:
+def phase_threshold(
+    rarity: str, total_forms: int, stage_index: int, pace: Any = DEFAULT_PACE
+) -> int:
     k = max(1, total_forms)
     i = stage_index + 1
     denominator = k * (k + 1) / 2.0
-    return round(GRADUATION_TOTALS[rarity] * i / denominator)
+    return max(1, round(graduation_total(rarity, pace) * i / denominator))
 
 
-def egg_price(tier: str | None = None) -> int:
+def egg_price(tier: str | None = None, pace: Any = DEFAULT_PACE) -> int:
     if tier is None:
-        return FRESH_EGG_PRICE
-    return round(FRESH_EGG_PRICE * GRADUATION_TOTALS[tier] / GRADUATION_TOTALS["common"])
+        return scaled(FRESH_EGG_PRICE, pace)
+    return scaled(
+        round(FRESH_EGG_PRICE * GRADUATION_TOTALS[tier] / GRADUATION_TOTALS["common"]),
+        pace,
+    )
 
 
 def _species_id(url_or_name: Any) -> int | None:
