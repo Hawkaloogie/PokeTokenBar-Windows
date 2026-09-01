@@ -74,32 +74,35 @@ class PaceScalingTests(unittest.TestCase):
         "phase": lambda p: phase_threshold("common", 1, 0, p),
     }
 
-    def test_every_value_scales_by_the_same_divisor(self) -> None:
-        for pace, divisor in PACE_DIVISORS.items():
-            for name, fn in self.ECONOMY.items():
-                expected = max(1, round(fn(DEFAULT_PACE) / divisor))
-                self.assertEqual(
-                    fn(pace), expected,
-                    f"{name} did not scale with pace {pace!r} - a dependent was missed",
-                )
-
-    def test_nothing_in_the_economy_is_left_at_standard(self) -> None:
-        """A straggler would show up as a value identical across paces."""
+    def test_prices_and_thresholds_are_identical_at_every_pace(self) -> None:
+        """The tier is a speed boost, not a discount - nothing shown changes."""
         for name, fn in self.ECONOMY.items():
-            self.assertGreater(
-                fn(DEFAULT_PACE), fn("casual"),
-                f"{name} is the same at casual and standard - it is not scaled",
+            values = {pace: fn(pace) for pace in PACE_DIVISORS}
+            self.assertEqual(
+                len(set(values.values())), 1,
+                f"{name} differs by pace: {values} - the player should always "
+                f"see real token values",
             )
 
-    def test_ordering_is_preserved_at_every_pace(self) -> None:
-        for pace in PACE_DIVISORS:
-            self.assertGreater(graduation_total("legendary", pace), graduation_total("common", pace))
-            self.assertGreater(egg_price("rare", pace), egg_price(None, pace))
+    def test_the_pace_only_changes_how_fast_usage_is_credited(self) -> None:
+        from poketokenbar_windows.pokemon import boosted, pace_multiplier
 
-    def test_values_never_collapse_to_zero(self) -> None:
+        for pace, multiplier in PACE_DIVISORS.items():
+            self.assertEqual(pace_multiplier(pace), multiplier)
+            self.assertEqual(boosted(10_000_000, pace), 10_000_000 * multiplier)
+
+    def test_an_easier_tier_credits_strictly_more(self) -> None:
+        from poketokenbar_windows.pokemon import boosted
+
+        self.assertGreater(boosted(1_000, "casual"), boosted(1_000, "light"))
+        self.assertGreater(boosted(1_000, "light"), boosted(1_000, "standard"))
+
+    def test_crediting_never_goes_negative(self) -> None:
+        from poketokenbar_windows.pokemon import boosted
+
         for pace in PACE_DIVISORS:
-            for name, fn in self.ECONOMY.items():
-                self.assertGreaterEqual(fn(pace), 1, f"{name} hit zero at {pace}")
+            self.assertEqual(boosted(-5, pace), 0)
+            self.assertEqual(boosted(0, pace), 0)
 
     def test_defaults_are_unchanged_for_existing_players(self) -> None:
         self.assertEqual(egg_hatch_threshold(), EGG_HATCH_THRESHOLD)
@@ -122,27 +125,37 @@ class PaceInPlayTests(unittest.TestCase):
             from poketokenbar_windows.pokemon import HatchResult
             return HatchResult(10, [10], "common", "Hardy", False, 200)
 
-    def test_a_casual_player_hatches_far_sooner(self) -> None:
-        casual = GameState(); set_pace(casual, "casual")
-        standard = GameState()
-        tokens = egg_hatch_threshold("casual")
-        apply_usage(casual, tokens, self.FakeAPI())
-        apply_usage(standard, tokens, self.FakeAPI())
-        self.assertIsNotNone(casual.mon, "casual player should have hatched")
-        self.assertIsNone(standard.mon, "standard player should still be on the egg")
+    def test_a_casual_player_progresses_far_faster_from_the_same_usage(self) -> None:
+        """Same real tokens through usage_delta; the tier decides the credit."""
+        from datetime import date
 
-    def test_shop_prices_follow_the_state_pace(self) -> None:
+        from poketokenbar_windows.state import usage_delta
+
+        real = {"claude": 1_000_000}
+        results = {}
+        for pace in ("standard", "light", "casual"):
+            state = GameState()
+            set_pace(state, pace)
+            usage_delta(state, {"claude": 0}, date(2026, 9, 1))   # seed baseline
+            results[pace] = usage_delta(state, real, date(2026, 9, 1))
+        self.assertEqual(results["standard"], 1_000_000)
+        self.assertEqual(results["light"], 10_000_000)
+        self.assertEqual(results["casual"], 50_000_000)
+
+    def test_a_casual_wallet_fills_faster_at_the_same_prices(self) -> None:
         state = GameState()
         set_pace(state, "casual")
-        state.used_since_install = item_price("mint", "casual")
-        ok, _msg = buy_item(state, "mint")
-        self.assertTrue(ok, "a casual-priced Mint should be affordable")
+        state.used_since_install = item_price("mint")
+        self.assertTrue(buy_item(state, "mint")[0])
 
-    def test_the_same_wallet_cannot_buy_at_standard_pace(self) -> None:
-        state = GameState()
-        state.used_since_install = item_price("mint", "casual")
-        ok, _msg = buy_item(state, "mint")
-        self.assertFalse(ok)
+    def test_the_shop_charges_the_same_at_every_pace(self) -> None:
+        for pace in ("standard", "light", "casual"):
+            state = GameState()
+            set_pace(state, pace)
+            state.used_since_install = item_price("mint") - 1
+            self.assertFalse(buy_item(state, "mint")[0])
+            state.used_since_install = item_price("mint")
+            self.assertTrue(buy_item(state, "mint")[0])
 
     def test_pace_survives_a_save_load_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

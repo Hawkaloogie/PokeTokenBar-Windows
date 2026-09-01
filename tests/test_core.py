@@ -250,7 +250,12 @@ class StateTests(unittest.TestCase):
         assert state.mon is not None
         target = phase_threshold(state.mon.rarity, len(state.mon.path_ids), state.mon.stage_index)
         state.mon.used_at_stage = target // 2
-        self.assertEqual(companion_progress_percent(state), 50)
+        # The level now spans the whole LINE, so halfway through stage 1 of a
+        # three-stage line is Lv. 17, not 50. The bar still shows the stage.
+        from poketokenbar_windows.state import stage_progress_percent
+
+        self.assertEqual(companion_progress_percent(state), 17)
+        self.assertEqual(stage_progress_percent(state), 50)
 
     def test_companion_progress_percent_is_clamped(self):
         self.assertEqual(companion_progress_percent(GameState(egg_usage=-1)), 0)

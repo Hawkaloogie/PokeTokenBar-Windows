@@ -18,6 +18,7 @@ from .pokemon import (
     SHINY_CHARM_PRICE,
     PokeAPIClient,
     egg_price,
+    boosted,
     egg_hatch_threshold,
     item_price,
     trade_reroll_price,
@@ -125,6 +126,11 @@ class GameState:
     trades_window: str = ""
     # One paid reroll per window; cleared when the window rolls over.
     trades_rerolled: bool = False
+    # A reset time the USER actually observed on Claude's usage page. The clock
+    # rolls forward from here in five-hour blocks. Deriving it from local logs
+    # was consistently wrong because Claude Desktop usage opens the window too
+    # and leaves no message times behind.
+    reset_anchor: str = ""
 
     @property
     def wallet(self) -> int:
@@ -249,19 +255,43 @@ def normalize_representative(state: GameState) -> None:
 
 
 def companion_progress_percent(state: GameState) -> int:
-    """Return whole-percent progress for the active egg or Pokemon stage."""
+    """Level across the WHOLE evolution line, 0-100.
+
+    It used to be percent-through-the-current-stage, which reset to 0 on every
+    evolution - so a Pokemon two thirds through the first of three stages read
+    as 'Lv. 67' and then dropped to zero when it evolved. A level should only
+    climb. Now 100 means fully evolved, and the evolutions land at the stage
+    boundaries along the way (Lv. 33 and Lv. 67 on a three-stage line).
+    """
     if state.mon is None:
         value = state.egg_usage
         target = egg_hatch_threshold(state.pace)
+        return min(100, max(0, value * 100 // max(1, target)))
+
+    mon = state.mon
+    forms = max(1, len(mon.path_ids))
+    stage = min(max(0, mon.stage_index), forms - 1)
+    if state.pending_evolution:
+        fraction = 1.0
     else:
-        mon = state.mon
-        value = mon.used_at_stage
-        if state.pending_evolution:
-            return 100
-        target = phase_threshold(
-            mon.rarity, len(mon.path_ids), mon.stage_index, state.pace
-        )
-    return min(100, max(0, value * 100 // max(1, target)))
+        target = phase_threshold(mon.rarity, forms, stage, state.pace)
+        fraction = min(1.0, max(0.0, mon.used_at_stage / max(1, target)))
+    # Each stage is an EQUAL slice of the line, so evolutions land on round
+    # numbers (33 and 67 on a three-stage line). Weighting by token cost would
+    # put them at 16 and 50, because later stages cost far more - accurate, but
+    # not what a level is expected to mean.
+    return min(100, max(0, round((stage + fraction) / forms * 100)))
+
+
+def stage_progress_percent(state: GameState) -> int:
+    """Progress through the CURRENT stage only - for the progress bar."""
+    if state.mon is None:
+        return min(100, max(0, state.egg_usage * 100 // max(1, egg_hatch_threshold(state.pace))))
+    if state.pending_evolution:
+        return 100
+    mon = state.mon
+    target = phase_threshold(mon.rarity, len(mon.path_ids), mon.stage_index, state.pace)
+    return min(100, max(0, mon.used_at_stage * 100 // max(1, target)))
 
 
 def _coerce_mon(raw: Any) -> MonState | None:
@@ -413,6 +443,7 @@ class StateStore:
                 trade_offers=load_offers(raw.get("trade_offers")),
                 trades_window=str(raw.get("trades_window", "")),
                 trades_rerolled=bool(raw.get("trades_rerolled", False)),
+                reset_anchor=str(raw.get("reset_anchor", "")),
                 setup_completed=bool(
                     raw.get("setup_completed", bool(mon is not None or catches))
                 ),
@@ -496,8 +527,12 @@ def usage_delta(
 
     state.last_day = key
     state.last_today_tokens = sum(current.values())
-    state.used_since_install += delta
-    return delta
+    # The pace is applied HERE and nowhere else: real usage is measured as it
+    # is, then credited at the tier's rate. Every threshold, price and figure
+    # shown to the player stays in real tokens.
+    credited = boosted(delta, state.pace)
+    state.used_since_install += credited
+    return credited
 
 
 def apply_usage(state: GameState, delta: int, api: PokeAPIClient) -> list[str]:
@@ -984,6 +1019,18 @@ def accept_trade(
     state.trade_offers = [o for i, o in enumerate(offers) if i != offer_index]
     normalize_representative(state)
     return True, "Trade complete"
+
+
+def set_reset_anchor(state: GameState, when: Any) -> str:
+    """Record an observed reset time. Empty clears the clock."""
+    if not when:
+        state.reset_anchor = ""
+        return ""
+    if isinstance(when, str):
+        state.reset_anchor = when
+    else:
+        state.reset_anchor = when.isoformat()
+    return state.reset_anchor
 
 
 def set_pace(state: GameState, pace: Any) -> str:

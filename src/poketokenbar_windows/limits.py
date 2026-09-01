@@ -225,6 +225,39 @@ def claude_block_reset(now: datetime | None = None) -> datetime | None:
 DERIVED_RESET_ENABLED = False
 
 
+def reset_from_anchor(anchor: Any, now: datetime | None = None) -> datetime | None:
+    """Next reset, rolling forward in five-hour blocks from an observed one.
+
+    The anchor is a time the user actually saw on Claude's usage page, so this
+    is arithmetic on a known-good value rather than a guess.
+    """
+    current = now or datetime.now().astimezone()
+    known = _parse_datetime(anchor)
+    if known is None:
+        return None
+    if known > current:
+        return known
+    elapsed = (current - known).total_seconds()
+    blocks = int(elapsed // CLAUDE_BLOCK_WINDOW.total_seconds()) + 1
+    return known + CLAUDE_BLOCK_WINDOW * blocks
+
+
+def apply_reset_anchor(limits: ProviderLimits, anchor: Any) -> ProviderLimits:
+    """Fill the 5-hour window's reset from the user's anchored clock."""
+    if not anchor or not limits.windows:
+        return limits
+    when = reset_from_anchor(anchor)
+    if when is None:
+        return limits
+    rebuilt = [
+        replace(window, resets_at=when, estimated_reset=False)
+        if "5-hour" in window.label.lower() and window.resets_at is None
+        else window
+        for window in limits.windows
+    ]
+    return replace(limits, windows=rebuilt)
+
+
 def _fill_missing_reset(limits: ProviderLimits) -> ProviderLimits:
     """Give the 5-hour window a derived reset when the API did not supply one."""
     if not DERIVED_RESET_ENABLED:

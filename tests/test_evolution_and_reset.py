@@ -48,8 +48,14 @@ class GatedEvolutionTests(unittest.TestCase):
         again = apply_usage(state, 5_000, FakeAPI())
         self.assertNotIn("evolution_ready:2", again, "re-announced on every refresh")
 
-    def test_a_waiting_companion_shows_a_full_bar(self) -> None:
-        self.assertEqual(companion_progress_percent(self._to_the_brink()), 100)
+    def test_a_waiting_companion_sits_exactly_on_a_stage_boundary(self) -> None:
+        """The level spans the whole line now, so stage 1 of 3 ends at 33."""
+        from poketokenbar_windows.state import stage_progress_percent
+
+        state = self._to_the_brink()
+        self.assertEqual(companion_progress_percent(state), 33)
+        # The BAR still fills, because that shows the current stage.
+        self.assertEqual(stage_progress_percent(state), 100)
 
     def test_tokens_earned_while_waiting_are_banked_not_burned(self) -> None:
         state = self._to_the_brink(extra=250_000)

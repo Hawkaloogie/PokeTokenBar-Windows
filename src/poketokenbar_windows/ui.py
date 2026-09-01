@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QSlider,
     QSpinBox,
+    QTimeEdit,
     QSystemTrayIcon,
     QTabWidget,
     QToolTip,
@@ -111,7 +112,7 @@ from .floating_pet import (
     AnimatedSpriteFrameStabilizer,
     FloatingPetController,
 )
-from .limits import fetch_all_limits
+from .limits import apply_reset_anchor, fetch_all_limits
 from .models import ProviderLimits, UsageSnapshot
 from .notifications import (
     COMPANION_NOTIFICATIONS_KEY,
@@ -183,6 +184,7 @@ from .state import (
     representative_subject,
     reroll_trades,
     set_favourite,
+    set_reset_anchor,
     trade_candidates,
     reset_game_state,
     set_pace,
@@ -856,6 +858,7 @@ class MainWindow(QMainWindow):
     pace_changed = Signal(object)
     pet_party_changed = Signal(bool)
     pet_bias_changed = Signal(str)
+    reset_anchor_changed = Signal(str)
     evolve_requested = Signal()
     preferences_changed = Signal()
     representative_changed = Signal(object)
@@ -987,6 +990,13 @@ class MainWindow(QMainWindow):
         self.cost_card = MetricCard("Est. cost")
         self.week_card = MetricCard("This week")
         self.wallet_card = MetricCard("Shop wallet")
+        self.wallet_card.setToolTip(
+            "Game currency earned from your usage. On an easier pace each
+"
+            "real token credits more, so this runs ahead of the token
+"
+            "counters above - those always show your actual usage."
+        )
         metrics.addWidget(self.today_card, 0, 0)
         metrics.addWidget(self.cost_card, 0, 1)
         metrics.addWidget(self.week_card, 1, 0)
@@ -2095,6 +2105,38 @@ class MainWindow(QMainWindow):
             "related warnings.",
         )
 
+        reset_row = QWidget()
+        reset_row.setStyleSheet("border: none;")
+        reset_layout = QHBoxLayout(reset_row)
+        reset_layout.setContentsMargins(0, 0, 0, 0)
+        self.reset_anchor_edit = QTimeEdit()
+        self.reset_anchor_edit.setDisplayFormat("HH:mm")
+        self.reset_anchor_edit.setToolTip(
+            "The time Claude's usage page says your 5-hour limit next resets"
+        )
+        _no_wheel(self.reset_anchor_edit)
+        reset_layout.addWidget(self.reset_anchor_edit)
+        self.reset_anchor_button = QPushButton("Start clock")
+        self.reset_anchor_button.clicked.connect(
+            lambda: self.reset_anchor_changed.emit(
+                self.reset_anchor_edit.time().toString("HH:mm")
+            )
+        )
+        reset_layout.addWidget(self.reset_anchor_button)
+        self.reset_anchor_clear = QPushButton("Clear")
+        self.reset_anchor_clear.clicked.connect(
+            lambda: self.reset_anchor_changed.emit("")
+        )
+        reset_layout.addWidget(self.reset_anchor_clear)
+        self._settings_row(
+            display, "Limit resets at", reset_row,
+            "Anthropic often does not report a reset time, and it cannot be "
+            "derived reliably from local logs because Claude Desktop opens the "
+            "same window without leaving message times. Enter the time Claude's "
+            "usage page shows and the countdown rolls forward from it in "
+            "five-hour blocks.",
+        )
+
         self.forecast_check = self._setting_check(
             "Show depletion forecast for timed limits",
             FORECAST_ENABLED_KEY,
@@ -2575,7 +2617,9 @@ class MainWindow(QMainWindow):
             shiny = "✨ " if mon.is_shiny else ""
             self.detail_label.setText(f"{shiny}{mon.rarity.title()} · {mon.nature} nature · stage {mon.stage_index + 1}/{len(mon.path_ids)}")
             value = mon.used_at_stage
-            target = phase_threshold(mon.rarity, len(mon.path_ids), mon.stage_index)
+            target = phase_threshold(
+                mon.rarity, len(mon.path_ids), mon.stage_index, self.state.pace
+            )
             self._set_sprite(result.sprite_path)
             current_name = self.api.localized_name(mon.current_id, self.state.language)
             if mon.stage_index + 1 < len(mon.path_ids):
@@ -3255,6 +3299,7 @@ class TrayController(QObject):
         self.window.pace_changed.connect(self._set_pace)
         self.window.pet_party_changed.connect(self._set_party_visible)
         self.window.pet_bias_changed.connect(self._set_pet_bias)
+        self.window.reset_anchor_changed.connect(self._set_reset_anchor)
         self.window.preferences_changed.connect(self._preferences_changed)
         self.window.representative_changed.connect(self._set_representative)
         self.window.language_changed.connect(self._set_language)
@@ -3387,6 +3432,32 @@ class TrayController(QObject):
 
     def _set_party_visible(self, visible: bool) -> None:
         self.floating_pet.set_party_visible(bool(visible))
+
+    def _set_reset_anchor(self, hhmm: str) -> None:
+        """Anchor the reset clock to a time the user read off Claude."""
+        value = ""
+        if hhmm:
+            now = datetime.now().astimezone()
+            hour, _sep, minute = hhmm.partition(":")
+            try:
+                when = now.replace(
+                    hour=int(hour), minute=int(minute), second=0, microsecond=0
+                )
+            except ValueError:
+                return
+            if when <= now:
+                when += timedelta(days=1)
+            value = when.isoformat()
+        try:
+            with self.state_lock:
+                candidate = copy.deepcopy(self.state)
+                set_reset_anchor(candidate, value)
+                self.store.save(candidate)
+                self.state = candidate
+        except Exception:  # noqa: BLE001
+            return
+        self.window.set_state(self.state)
+        self.refresh()
 
     def _set_pet_bias(self, bias: str) -> None:
         self.floating_pet.set_bias(bias)
@@ -3980,6 +4051,14 @@ class TrayController(QObject):
         try:
             snapshot, errors = scan_all()
             limits = fetch_all_limits()
+            # Anthropic often omits the reset time. If the user has told us a
+            # real one they saw, roll the clock forward from that instead.
+            anchor = self.state.reset_anchor
+            if anchor:
+                limits = {
+                    key: apply_reset_anchor(value, anchor) if key == "claude" else value
+                    for key, value in limits.items()
+                }
             reveal_ball = self.api.item_sprite_path("poke-ball")
             with self.state_lock:
                 candidate = copy.deepcopy(self.state)

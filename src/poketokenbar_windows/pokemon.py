@@ -40,11 +40,12 @@ NATURES = [
     "Calm", "Gentle", "Sassy", "Careful", "Quirky",
 ]
 
-# How fast the token economy runs. A heavy Claude Code user burns hundreds of
-# millions of tokens a day and finds the default pace fine; someone using it
-# casually would wait months for a single hatch. The divisor scales EVERY
-# token-denominated value together - thresholds, growth totals and shop prices -
-# so the game stays internally consistent at any pace.
+# How fast the game runs. A heavy Claude Code user burns hundreds of millions
+# of tokens a day; someone using it casually would wait months for one hatch.
+#
+# This is a SPEED BOOST, not a discount. Every price and threshold stays at its
+# real value, and every number shown is the user's actual token usage - the
+# easier tiers simply make each token count for more when it is credited.
 PACE_DIVISORS: dict[str, int] = {
     "casual": 50,
     "light": 10,
@@ -52,8 +53,8 @@ PACE_DIVISORS: dict[str, int] = {
 }
 DEFAULT_PACE = "standard"
 PACE_LABELS: dict[str, str] = {
-    "casual": "Casual - light Claude use (50x cheaper)",
-    "light": "Light - occasional Claude use (10x cheaper)",
+    "casual": "Casual - light Claude use (50x faster)",
+    "light": "Light - occasional Claude use (10x faster)",
     "standard": "Standard - heavy Claude use",
 }
 
@@ -88,9 +89,19 @@ def pace_divisor(pace: Any = DEFAULT_PACE) -> int:
     return PACE_DIVISORS[normalize_pace(pace)]
 
 
+def pace_multiplier(pace: Any = DEFAULT_PACE) -> int:
+    """How much each real token counts for at this pace."""
+    return PACE_DIVISORS[normalize_pace(pace)]
+
+
+def boosted(tokens: int, pace: Any = DEFAULT_PACE) -> int:
+    """Credit real token usage at the current pace."""
+    return max(0, int(tokens)) * pace_multiplier(pace)
+
+
 def scaled(amount: int, pace: Any = DEFAULT_PACE) -> int:
-    """Apply the pace to one token amount. Never returns less than 1."""
-    return max(1, round(amount / pace_divisor(pace)))
+    """Kept for compatibility. Prices and thresholds no longer scale."""
+    return amount
 
 
 def egg_hatch_threshold(pace: Any = DEFAULT_PACE) -> int:
