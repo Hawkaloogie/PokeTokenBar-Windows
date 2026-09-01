@@ -1,6 +1,35 @@
-# PokeTokenBar Windows
+# PokeTokenBar Windows — party fork
 
-A native Windows port of [chattymin/PokeTokenBar](https://github.com/chattymin/PokeTokenBar): your local AI coding-token usage raises a Pokemon companion from the Windows notification area.
+Your local AI coding-token usage raises a Pokemon companion from the Windows
+notification area. This fork adds a party of six, trading, and a lot else.
+
+> **Heads up: this is my first time editing someone else's project in public, so
+> I am not sure I have all the conventions right.** If I have credited someone
+> wrong, put a file in the wrong place, or done something that is simply not how
+> this is done — please tell me and I will fix it. I would genuinely rather be
+> corrected than leave it wrong.
+
+## Credit where it belongs
+
+I did not build this app. I built on top of two projects that other people made:
+
+- **[chattymin/PokeTokenBar](https://github.com/chattymin/PokeTokenBar)** — the
+  original idea and the original macOS app, in Swift.
+- **[pnmartinez/PokeTokenBar-Windows](https://github.com/pnmartinez/PokeTokenBar-Windows)**
+  — the entire port to Windows, in Python and Qt. That is the code I actually
+  started from, and it is the larger half of what you are running.
+
+Full breakdown of who wrote what is in [NOTICE.md](NOTICE.md).
+
+**Everything I added is listed in
+[CHANGES-IN-THIS-FORK.md](CHANGES-IN-THIS-FORK.md).** Short version: a
+six-Pokemon party where only the main one grows, value-matched trading where the
+Pokemon is the whole price, Professor Oak's Ranch, generation caps, a pace
+setting for light users, a rebuilt settings screen and theme, and a stack of bug
+fixes.
+
+If a bug is in something on that list, it is mine. Please report it here rather
+than upstream.
 
 > **Status: alpha.** The token tracker, game loop, tray UI, local state, shop/bag, runtime Pokemon fetching, Windows startup integration, and Claude/Codex official-limit checks are implemented. See **Parity / known gaps** before replacing the macOS app in a workflow you depend on.
 
