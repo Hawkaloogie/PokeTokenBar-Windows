@@ -186,6 +186,7 @@ from .state import (
     set_favourite,
     set_reset_anchor,
     trade_candidates,
+    value_of,
     reset_game_state,
     set_pace,
     start_with_species,
@@ -864,7 +865,8 @@ class MainWindow(QMainWindow):
     party_swap_requested = Signal(int)
     party_clear_requested = Signal(int)
     party_assign_requested = Signal(int, object)
-    trade_accept_requested = Signal(int, int)
+    # object, not int: a trade is paid with a LIST of Pokemon now.
+    trade_accept_requested = Signal(int, object)
     trade_reroll_requested = Signal()
     favourite_toggled = Signal(int, bool)
     reset_requested = Signal()
@@ -1491,36 +1493,86 @@ class MainWindow(QMainWindow):
             text.addWidget(wants)
             row.addLayout(text, 1)
 
-            picker = _no_wheel(QComboBox())
-            picker.setSizeAdjustPolicy(
-                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-            )
-            picker.setMinimumContentsLength(12)
+            # Tick as many Pokemon as it takes. Value is additive, so three
+            # Commons buy an Uncommon that none of them could afford alone.
+            # Without that, the rarity tiers (1/3/8/25) were unreachable by
+            # raising, which only ever doubles a Pokemon.
+            picker = QListWidget()
+            picker.setObjectName("TradePicker")
+            picker.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+            picker.setFixedHeight(94)
+            picker.setMinimumWidth(200)
             candidates = trade_candidates(self.state, index)
             for position in candidates:
                 entry = self.state.catches[position]
                 prefix = "✨ " if entry.is_shiny else ""
-                picker.addItem(
+                item = QListWidgetItem(
                     f"{prefix}#{entry.species_id:03d} "
-                    f"{self.api.localized_name(entry.species_id, self.state.language)}",
-                    position,
+                    f"{self.api.localized_name(entry.species_id, self.state.language)}"
+                    f"   {value_of(entry):.1f}"
                 )
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Unchecked)
+                item.setData(Qt.ItemDataRole.UserRole, position)
+                picker.addItem(item)
+
+            tally = QLabel("")
+            tally.setObjectName("Muted")
             accept = QPushButton("Trade")
+
+            def _ticked(widget=picker) -> list[int]:
+                chosen = []
+                for position in range(widget.count()):
+                    item = widget.item(position)
+                    if item.checkState() == Qt.CheckState.Checked:
+                        chosen.append(int(item.data(Qt.ItemDataRole.UserRole)))
+                return chosen
+
+            def _retally(
+                _item=None, widget=picker, label=tally, button=accept, want=offer
+            ) -> None:
+                chosen = _ticked(widget)
+                worth = sum(value_of(self.state.catches[i]) for i in chosen)
+                enough = worth >= want.wants_value
+                button.setEnabled(bool(chosen) and enough)
+                if not chosen:
+                    label.setText(f"Needs {want.wants_value:.1f}")
+                    button.setToolTip("Tick the Pokemon you want to hand over")
+                    return
+                short = want.wants_value - worth
+                label.setText(
+                    f"{worth:.1f} of {want.wants_value:.1f}"
+                    + ("  ready" if enough else f"  {short:.1f} short")
+                )
+                button.setToolTip(
+                    f"Hand over {len(chosen)} Pokemon"
+                    if enough
+                    else f"Tick another - {short:.1f} short"
+                )
+
             if candidates:
-                picker.setToolTip("Choose which Pokemon to hand over")
+                picker.itemChanged.connect(_retally)
                 accept.clicked.connect(
-                    lambda _checked=False, offer_index=index, combo=picker: (
-                        self.trade_accept_requested.emit(offer_index, int(combo.currentData()))
-                        if combo.currentData() is not None else None
+                    lambda _checked=False, offer_index=index, widget=picker: (
+                        self.trade_accept_requested.emit(offer_index, _ticked(widget))
+                        if _ticked(widget) else None
                     )
                 )
+                _retally()
             else:
-                picker.addItem("None eligible", None)
+                blank = QListWidgetItem("Nothing you can trade")
+                blank.setFlags(Qt.ItemFlag.NoItemFlags)
+                picker.addItem(blank)
                 picker.setEnabled(False)
+                tally.setText(f"Needs {offer.wants_value:.1f}")
                 accept.setEnabled(False)
-                accept.setToolTip(f"You need {offer.describe_wanted()}")
+                accept.setToolTip(
+                    "Everything you own is your main or a favourite, and "
+                    "neither can be traded away"
+                )
             side = QVBoxLayout()
             side.addWidget(picker)
+            side.addWidget(tally)
             side.addWidget(accept)
             row.addLayout(side)
 
@@ -3683,12 +3735,14 @@ class TrayController(QObject):
             return
         self.window.set_state(self.state)
 
-    def _accept_trade(self, offer_index: int, catch_index: int) -> None:
+    def _accept_trade(self, offer_index: int, catch_indexes) -> None:
         message = ""
         try:
             with self.state_lock:
                 candidate = copy.deepcopy(self.state)
-                ok, message = accept_trade(candidate, int(offer_index), int(catch_index))
+                ok, message = accept_trade(
+                    candidate, int(offer_index), catch_indexes
+                )
                 if not ok:
                     QMessageBox.information(self.window, "Trade", message)
                     return

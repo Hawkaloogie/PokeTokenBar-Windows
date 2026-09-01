@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -57,6 +58,12 @@ def _padded(canvas: int, artwork: int, artwork_width: int | None = None) -> QPix
     )
     painter.end()
     return pixmap
+
+
+# A path that does not exist: set_bench falls back to a drawn Poke Ball,
+# which still occupies a real bench slot. Enough to widen the window,
+# which is all these checks need.
+_TINY_SPRITE = Path("no-such-bench-sprite.png")
 
 
 def _artwork_height(pixmap: QPixmap) -> int:
@@ -192,3 +199,62 @@ class AnimatedFramesAreNotTrimmedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CalloutAnchorTests(unittest.TestCase):
+    """The speech bubble belongs over the MAIN Pokemon, not the whole party.
+
+    Reported as: "the speech bubble on the desktop sprite stays in the center
+    about the entire party, versus only on top of the main pokemon".
+
+    The pet window spans the main sprite PLUS the level text PLUS every filled
+    bench slot, so centring a callout on the window centred it on the party.
+    """
+
+    def setUp(self) -> None:
+        self.app = _app()
+
+    def _pet(self, bench: int, bias: str) -> FloatingPetWindow:
+        from poketokenbar_windows.floating_pet import PET_BIAS_LEFT, PET_BIAS_RIGHT
+
+        pet = FloatingPetWindow(96)
+        pet.bias = PET_BIAS_RIGHT if bias == "right" else PET_BIAS_LEFT
+        pet.set_level("Lv. 54")
+        pet.set_bench([_TINY_SPRITE] * bench)
+        return pet
+
+    def test_the_main_slot_is_narrower_than_the_window_once_benched(self) -> None:
+        pet = self._pet(bench=3, bias="right")
+        self.assertLess(
+            pet.main_slot_rect().width(),
+            pet.width(),
+            "fixture did not actually add bench slots",
+        )
+
+    def test_the_anchor_centre_follows_the_main_not_the_window(self) -> None:
+        for bias in ("left", "right"):
+            with self.subTest(bias=bias):
+                bare = self._pet(bench=0, bias=bias)
+                bare_offset = bare.main_slot_rect().center().x() - bare.x()
+                crowded = self._pet(bench=3, bias=bias)
+                crowded_offset = crowded.main_slot_rect().center().x() - crowded.x()
+                window_offset = crowded.width() // 2
+                self.assertNotEqual(
+                    crowded_offset,
+                    window_offset,
+                    "the anchor is still the window centre, so the bubble "
+                    "would sit over the middle of the party",
+                )
+                if bias == "right":
+                    self.assertGreater(
+                        crowded_offset,
+                        bare_offset,
+                        "bench sits left of the main when right-biased, so the "
+                        "main's centre should move right within the window",
+                    )
+
+    def test_the_anchor_stays_inside_the_window(self) -> None:
+        pet = self._pet(bench=5, bias="right")
+        anchor = pet.main_slot_rect()
+        self.assertGreaterEqual(anchor.x(), pet.x())
+        self.assertLessEqual(anchor.right(), pet.x() + pet.width())

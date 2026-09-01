@@ -31,10 +31,12 @@ from .pokemon import (
 )
 from .trading import (
     TradeOffer,
+    bundle_value,
     eligible_catches,
     generate_offers,
     load_offers,
     offer_to_dict,
+    tradeable_catches,
     value_of,
 )
 from .windows import state_dir
@@ -1067,34 +1069,70 @@ def reroll_trades(
 
 
 def trade_candidates(state: GameState, offer_index: int) -> list[int]:
-    """Pokedex entries that could pay for this offer."""
+    """Pokedex entries that may go INTO a payment for this offer.
+
+    Everything the player is allowed to hand over, not only what covers the
+    price alone - a trade can be paid with several Pokemon together, so a
+    Common that falls short by itself is still a valid part of a bundle.
+    """
     offers = state.trade_offers or []
     if not 0 <= offer_index < len(offers):
         return []
-    return eligible_catches(state, offers[offer_index])
+    return tradeable_catches(state)
 
 
 def accept_trade(
-    state: GameState, offer_index: int, catch_index: int
+    state: GameState, offer_index: int, catch_indexes: Any
 ) -> tuple[bool, str]:
-    """Hand over one Pokemon and receive the offered one.
+    """Hand over one or more Pokemon and receive the offered one.
 
-    The Pokemon is the entire price - no tokens change hands.
+    The Pokemon are the entire price - no tokens change hands. Value is
+    additive, so three Commons can buy an Uncommon that none of them could
+    afford on its own. Before this, rarity tiers were 1/3/8/25 while raising
+    only ever doubled a Pokemon, so a Common could never reach an Uncommon and
+    the ladder had no bottom rung.
+
+    Accepts a single index or an iterable of them; a bare int keeps every
+    existing one-for-one caller working unchanged.
     """
     offers = state.trade_offers or []
     if not 0 <= offer_index < len(offers):
         return False, "That offer is gone"
     offer = offers[offer_index]
     catches = state.catches or []
-    if not 0 <= catch_index < len(catches):
-        return False, "That Pokemon is gone"
-    given = catches[catch_index]
-    if given.is_favourite:
-        return False, "Favourites cannot be traded away"
-    if catch_index not in eligible_catches(state, offer):
+
+    if isinstance(catch_indexes, int) and not isinstance(catch_indexes, bool):
+        wanted = [catch_indexes]
+    else:
+        try:
+            wanted = [int(value) for value in catch_indexes]
+        except (TypeError, ValueError):
+            return False, "That Pokemon is gone"
+    # Deduplicate, or one Pokemon could be counted twice toward the same price.
+    unique: list[int] = []
+    for index in wanted:
+        if index not in unique:
+            unique.append(index)
+    wanted = unique
+    if not wanted:
+        return False, "Choose at least one Pokemon to trade"
+
+    allowed = set(tradeable_catches(state))
+    for index in wanted:
+        if not 0 <= index < len(catches):
+            return False, "That Pokemon is gone"
+        if catches[index].is_favourite:
+            return False, "Favourites cannot be traded away"
+        if index not in allowed:
+            return False, "Your main Pokemon cannot be traded away"
+
+    given = [catches[index] for index in wanted]
+    if not offer.accepts_bundle(given):
         return False, (
-            f"{offer.describe_wanted().capitalize()} is needed for this trade"
+            f"That comes to {bundle_value(given):.1f}, and this trade needs "
+            f"{offer.wants_value:.1f} - add another Pokemon, or raise one further"
         )
+
     received = CatchRecord(
         species_id=offer.gives_id,
         base_id=offer.gives_id,
@@ -1104,10 +1142,15 @@ def accept_trade(
         nature=random.choice(NATURES),
         caught_at=datetime.now().astimezone().isoformat(),
     )
-    catches.pop(catch_index)
+    # Highest index first: popping low-to-high shifts every later index down by
+    # one, which would remove the wrong Pokemon.
+    for index in sorted(wanted, reverse=True):
+        catches.pop(index)
     catches.append(received)
     state.trade_offers = [o for i, o in enumerate(offers) if i != offer_index]
     normalize_representative(state)
+    if len(wanted) > 1:
+        return True, f"Traded {len(wanted)} Pokemon"
     return True, "Trade complete"
 
 

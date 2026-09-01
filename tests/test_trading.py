@@ -292,10 +292,16 @@ class AcceptTradeTests(unittest.TestCase):
         self.assertEqual(state.wallet, wallet, "the Pokemon is the only price")
 
     def test_an_unfair_trade_is_refused(self) -> None:
+        """Still refused - but the message now names the gap.
+
+        A trade can be paid with several Pokemon, so "you need a Rare" was the
+        wrong thing to say: what the player needs to know is how far short the
+        current selection is.
+        """
         state = self._state()
         ok, message = accept_trade(state, 0, 0)
         self.assertFalse(ok)
-        self.assertIn("needed", message)
+        self.assertIn("needs", message)
         self.assertEqual(len(state.catches), 2)
 
     def test_a_favourite_cannot_be_traded_away(self) -> None:
@@ -316,9 +322,15 @@ class AcceptTradeTests(unittest.TestCase):
         self.assertFalse(accept_trade(state, 9, 0)[0])
         self.assertFalse(accept_trade(state, 0, 9)[0])
 
-    def test_candidates_match_what_accept_will_allow(self) -> None:
+    def test_candidates_are_everything_you_may_hand_over(self) -> None:
+        """Not only what covers the price alone.
+
+        Index 0 is a Common that cannot pay for this Rare offer by itself, but
+        it can still go INTO a bundle, so it belongs in the picker. Screening
+        it out was what made the trade board look empty.
+        """
         state = self._state()
-        self.assertEqual(trade_candidates(state, 0), [1])
+        self.assertEqual(trade_candidates(state, 0), [0, 1])
 
 
 

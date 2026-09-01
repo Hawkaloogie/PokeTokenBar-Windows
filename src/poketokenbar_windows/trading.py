@@ -102,17 +102,36 @@ class TradeOffer:
         return trade_value(self.gives_rarity, len(self.gives_path) or 1, 0, self.gives_shiny)
 
     def accepts(self, record: Any) -> bool:
+        """Whether ONE Pokemon covers this offer on its own."""
         return value_of(record) >= self.wants_value
+
+    def accepts_bundle(self, records: Iterable[Any]) -> bool:
+        """Whether several Pokemon together cover this offer.
+
+        Value is additive, so three Commons pay for an Uncommon. Without this
+        the ladder had no bottom rung: a Common is worth 1.0 and doubles to 2.0
+        fully raised, but the cheapest Uncommon offer asks 2.7 and a
+        fully-grown one asks 5.4. No quantity of Commons could ever reach it,
+        so the only way to own an Uncommon was to hatch one - at which point
+        the trade was pointless.
+        """
+        return bundle_value(records) >= self.wants_value
 
     def describe_wanted(self) -> str:
         return describe_value(self.wants_value)
 
 
-def eligible_catches(state: Any, offer: TradeOffer) -> list[int]:
-    """Indexes of Pokedex entries that can pay for this offer.
+def bundle_value(records: Iterable[Any]) -> float:
+    """Combined trade value of several Pokemon."""
+    return sum(value_of(record) for record in records)
 
-    Favourites are never eligible, and neither is the Pokemon currently being
-    raised - losing either to a trade would be a nasty surprise.
+
+def tradeable_catches(state: Any) -> list[int]:
+    """Indexes of Pokedex entries the player is ALLOWED to hand over.
+
+    Says nothing about whether they are worth enough - any of these can go
+    into a bundle. Favourites are never tradeable, and neither is the Pokemon
+    currently being raised; losing either would be a nasty surprise.
     """
     main = getattr(state, "mon", None)
     main_key = None
@@ -125,9 +144,22 @@ def eligible_catches(state: Any, offer: TradeOffer) -> list[int]:
         if main_key is not None:
             if (catch.base_id, tuple(catch.path_ids or []), bool(catch.is_shiny)) == main_key:
                 continue
-        if offer.accepts(catch):
-            result.append(index)
+        result.append(index)
     return result
+
+
+def eligible_catches(state: Any, offer: TradeOffer) -> list[int]:
+    """Indexes that could pay for this offer ON THEIR OWN.
+
+    Kept separate from `tradeable_catches` because the two answer different
+    questions: this one is "what single Pokemon covers the price", which is
+    still how a one-for-one swap is judged.
+    """
+    return [
+        index
+        for index in tradeable_catches(state)
+        if offer.accepts(state.catches[index])
+    ]
 
 
 def _species_pool(generation_filter: Any) -> range:
