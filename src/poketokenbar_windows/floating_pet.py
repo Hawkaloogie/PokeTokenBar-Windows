@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QPoint, QSize, Qt, QTimer, Signal, QObject
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer, Signal, QObject
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -329,6 +329,17 @@ class FloatingPetWindow(QWidget):
         the same size no matter what the main slot currently holds.
         """
         return max(12, round(self.pet_size * BENCH_SCALE))
+
+    def main_slot_rect(self) -> QRect:
+        """The MAIN sprite's rectangle, in screen coordinates.
+
+        Callouts anchor to this rather than to the window. The window is as
+        wide as the main sprite plus the level text plus every filled bench
+        slot, so centring a speech bubble on it parked the bubble in the middle
+        of the whole party instead of over the Pokemon actually speaking.
+        """
+        local = self.label.geometry()
+        return QRect(self.mapToGlobal(local.topLeft()), local.size())
 
     def _relayout(self) -> None:
         """Size the window to the main sprite plus however many bench slots show."""
@@ -1306,17 +1317,22 @@ class FloatingPetController(QObject):
         self.hover.raise_()
 
     def _place_above(self, window: QWidget) -> None:
-        screen = self.app.screenAt(self.pet.geometry().center()) or self.app.primaryScreen()
+        # Anchored to the MAIN sprite, not the whole pet window - the window
+        # also spans the level text and every bench slot, so centring on it
+        # floated the bubble over the middle of the party rather than over the
+        # Pokemon it belongs to.
+        anchor = self.pet.main_slot_rect()
+        screen = self.app.screenAt(anchor.center()) or self.app.primaryScreen()
         if screen is None:
             return
         available = screen.availableGeometry()
         size = window.sizeHint().expandedTo(window.size())
         window.resize(size)
-        x = self.pet.x() + (self.pet.width() - window.width()) // 2
+        x = anchor.x() + (anchor.width() - window.width()) // 2
         x = min(available.right() - window.width(), max(available.left(), x))
-        y = self.pet.y() - window.height() - 8
+        y = anchor.y() - window.height() - 8
         if y < available.top():
-            y = min(available.bottom() - window.height(), self.pet.y() + self.pet.height() + 8)
+            y = min(available.bottom() - window.height(), anchor.bottom() + 8)
         window.move(x, y)
 
     def _position_auxiliary_windows(self) -> None:
